@@ -1,0 +1,44 @@
+# Example configuration file for perp-trader
+# Copy this to config.toml and customize for your needs
+
+[database]
+url = "sqlite://perp_trader.db"
+max_connections = 5
+
+[trading]
+# Leverage range (random between min and max)
+min_leverage = 2.0
+max_leverage = 3.0
+
+# Position duration range in hours (random between min and max)
+min_duration_hours = 4
+max_duration_hours = 8
+
+# Minimum collateral ratio before alerting (1.5 = 150%)
+min_collateral_ratio = 1.5
+
+# Maximum PnL divergence threshold (0.05 = 5%)
+max_pnl_divergence = 0.05
+
+# Cooldown period between opening positions (in seconds)
+cooldown_seconds = 300  # 5 minutes
+
+[monitoring]
+# How often to check positions (in seconds)
+check_interval_seconds = 60
+
+# Timeout for exchange API calls (in seconds)
+api_timeout_seconds = 10
+
+[exchanges.backpack]
+api_key = "your_backpack_api_key"
+api_secret = "your_backpack_api_secret"
+# base_url = "https://api.backpack.exchange"  # Optional
+enabled = true
+
+[exchanges.hibachi]
+api_key = "your_hibachi_api_key"
+api_secret = "your_hibachi_api_secret"
+# base_url = "https://api.hibachi.exchange"  # Optional
+enabled = true
+

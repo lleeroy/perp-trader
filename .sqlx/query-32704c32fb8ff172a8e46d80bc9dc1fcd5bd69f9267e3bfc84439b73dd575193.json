@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            UPDATE positions \n            SET exchange_position_id = ?, updated_at = ?\n            WHERE id = ?\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "32704c32fb8ff172a8e46d80bc9dc1fcd5bd69f9267e3bfc84439b73dd575193"
+}

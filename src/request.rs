@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{Result};
 use log::warn;
 use reqwest::{header::HeaderMap, Method, Proxy, StatusCode, Client};

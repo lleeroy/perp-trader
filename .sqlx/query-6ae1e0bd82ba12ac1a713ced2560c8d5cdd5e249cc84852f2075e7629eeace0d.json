@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE hedge_pairs SET status = ? WHERE id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "6ae1e0bd82ba12ac1a713ced2560c8d5cdd5e249cc84852f2075e7629eeace0d"
+}

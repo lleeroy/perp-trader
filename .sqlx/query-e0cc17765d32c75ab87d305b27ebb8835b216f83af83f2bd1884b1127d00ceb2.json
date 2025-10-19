@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            UPDATE hedge_pairs \n            SET status = 'CLOSED', \n                closed_at = ?, \n                total_realized_pnl = ?,\n                points_earned = ?\n            WHERE id = ?\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "e0cc17765d32c75ab87d305b27ebb8835b216f83af83f2bd1884b1127d00ceb2"
+}

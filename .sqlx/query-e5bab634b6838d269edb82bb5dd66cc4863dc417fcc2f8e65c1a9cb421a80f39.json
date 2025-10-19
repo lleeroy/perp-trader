@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO positions (\n                id, hedge_pair_id, exchange, symbol, side, leverage, size,\n                entry_price, current_price, collateral, status, exchange_position_id,\n                opened_at, close_at, closed_at, realized_pnl, updated_at\n            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 17
+    },
+    "nullable": []
+  },
+  "hash": "e5bab634b6838d269edb82bb5dd66cc4863dc417fcc2f8e65c1a9cb421a80f39"
+}
