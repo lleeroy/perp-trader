@@ -28,11 +28,29 @@ async fn main() -> Result<()> {
     let supported_tokens = trader_client.get_supported_tokens();
     info!("Supported tokens: {:?}", supported_tokens);
 
-    backpack_client.open_position(
-        Token::sol(), 
-        PositionSide::Long, 
-        usdc_balance
-    ).await?;
+    // let position = backpack_client.open_position(
+    //     Token::sol(), 
+    //     PositionSide::Long, 
+    //     usdc_balance
+    // ).await?;
+
+    // trader_client.save_position(&position)?;
+
+    // Demonstrate retrieving from storage
+    let stored_positions = trader_client.get_all_positions()?;
+    info!("📂 Retrieved {} positions from local storage", stored_positions.len());
+
+    // Get active positions only
+    let active_positions = trader_client.get_active_positions()?;
+    info!("✅ Found {} active positions", active_positions.len());
+
+    // Print details
+    for pos in &stored_positions {
+        info!(
+            "Position: {} | {} | {} | {} | Status: {}",
+            pos.id, pos.exchange, pos.symbol, pos.side, pos.status
+        );
+    }
 
     Ok(())
 }

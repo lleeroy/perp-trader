@@ -24,6 +24,9 @@ pub enum RequestError {
 
 #[derive(Error, Debug)]
 pub enum TradingError {
+    #[error("Invalid input: {0}")]
+    InvalidInput(String),
+
     #[error("Insufficient balance: {0}")]
     InsufficientBalance(String),
 
@@ -59,6 +62,9 @@ pub enum TradingError {
 
     #[error("Request error: {0}")]
     RequestError(#[from] RequestError),
+
+    #[error("Storage error: {0}")]
+    StorageError(#[from] rusqlite::Error),
 
     #[error("Internal error: {0}")]
     InternalError(#[from] anyhow::Error),
