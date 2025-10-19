@@ -55,8 +55,6 @@ pub struct ExchangesConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExchangeCredentials {
-    pub api_key: String,
-    pub api_secret: String,
     /// Base URL for the exchange API
     #[serde(default)]
     pub base_url: Option<String>,
@@ -175,14 +173,6 @@ impl AppConfig {
 
         if self.trading.max_pnl_divergence < 0.0 || self.trading.max_pnl_divergence > 1.0 {
             anyhow::bail!("max_pnl_divergence must be between 0.0 and 1.0");
-        }
-
-        if self.exchanges.backpack.api_key.is_empty() || self.exchanges.backpack.api_secret.is_empty() {
-            anyhow::bail!("Backpack API credentials are required");
-        }
-
-        if self.exchanges.hibachi.api_key.is_empty() || self.exchanges.hibachi.api_secret.is_empty() {
-            anyhow::bail!("Hibachi API credentials are required");
         }
 
         Ok(())

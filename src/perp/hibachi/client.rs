@@ -7,6 +7,7 @@ use crate::config::ExchangeCredentials;
 use crate::error::TradingError;
 use crate::model::{Balance};
 use crate::perp::PerpExchange;
+use crate::trader::wallet::Wallet;
 
 /// Hibachi exchange client
 pub struct HibachiClient {
@@ -16,16 +17,13 @@ pub struct HibachiClient {
 }
 
 impl HibachiClient {
-    pub fn new(credentials: &ExchangeCredentials) -> Self {
-        let base_url = credentials
-            .base_url
-            .clone()
-            .unwrap_or_else(|| "https://api.hibachi.exchange".to_string());
+    pub fn new(wallet: &Wallet) -> Self {
+        let base_url = "https://api.hibachi.exchange";
 
         Self {
-            api_key: credentials.api_key.clone(),
-            api_secret: credentials.api_secret.clone(),
-            base_url,
+            api_key: wallet.hibachi_api_key.clone(),
+            api_secret: wallet.hibachi_api_secret.clone(),
+            base_url: base_url.to_string(),
         }
     }
 }
