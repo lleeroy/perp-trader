@@ -12,8 +12,8 @@ pub enum Exchange {
 impl fmt::Display for Exchange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Exchange::Backpack => write!(f, "backpack"),
-            Exchange::Hibachi => write!(f, "hibachi"),
+            Exchange::Backpack => write!(f, "Backpack"),
+            Exchange::Hibachi => write!(f, "Hibachi"),
         }
     }
 }

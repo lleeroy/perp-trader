@@ -1,7 +1,8 @@
+#![allow(unused)]
+
 use chrono::Utc;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-
 use crate::model::{HedgePair, Position, PositionStatus};
 
 /// In-memory storage for hedge pairs and positions

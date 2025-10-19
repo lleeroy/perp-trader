@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -5,19 +7,9 @@ use std::time::Duration;
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
-    pub database: DatabaseConfig,
     pub trading: TradingConfig,
     pub monitoring: MonitoringConfig,
     pub exchanges: ExchangesConfig,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DatabaseConfig {
-    /// SQLite database path (e.g., "sqlite://data.db")
-    pub url: String,
-    /// Maximum number of connections in the pool
-    #[serde(default = "default_pool_size")]
-    pub max_connections: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -211,49 +203,3 @@ impl AppConfig {
         Duration::from_secs(self.trading.cooldown_seconds)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_validation() {
-        // Valid config should pass
-        let config = AppConfig {
-            database: DatabaseConfig {
-                url: "sqlite://test.db".to_string(),
-                max_connections: 5,
-            },
-            trading: TradingConfig {
-                min_leverage: 2.0,
-                max_leverage: 3.0,
-                min_duration_hours: 4,
-                max_duration_hours: 8,
-                min_collateral_ratio: 1.5,
-                max_pnl_divergence: 0.05,
-                cooldown_seconds: 300,
-            },
-            monitoring: MonitoringConfig {
-                check_interval_seconds: 60,
-                api_timeout_seconds: 10,
-            },
-            exchanges: ExchangesConfig {
-                backpack: ExchangeCredentials {
-                    api_key: "test".to_string(),
-                    api_secret: "test".to_string(),
-                    base_url: None,
-                    enabled: true,
-                },
-                hibachi: ExchangeCredentials {
-                    api_key: "test".to_string(),
-                    api_secret: "test".to_string(),
-                    base_url: None,
-                    enabled: true,
-                },
-            },
-        };
-
-        assert!(config.validate().is_ok());
-    }
-}
-

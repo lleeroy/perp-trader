@@ -13,7 +13,9 @@ use std::sync::Arc;
 
 use config::AppConfig;
 use perp::backpack::BackpackClient;
-use perp::hibachi::HibachiClient;
+
+use crate::trader::wallet::Wallet;
+
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -25,10 +27,8 @@ async fn main() -> Result<()> {
     let config = Arc::new(config);
 
     info!("🔌 Initializing exchange clients...");
-    let backpack_client: Arc<dyn perp::PerpExchange> =
-        Arc::new(BackpackClient::new(&config.exchanges.backpack));
-    let hibachi_client: Arc<dyn perp::PerpExchange> =
-        Arc::new(HibachiClient::new(&config.exchanges.hibachi));
+    let wallet = Wallet::load_from_json(1).context("Failed to load wallet")?;
+    let backpack_client: Arc<dyn perp::PerpExchange> = Arc::new(BackpackClient::new(&wallet));
 
     // Health check exchanges
     info!("🏥 Performing health checks...");
@@ -36,12 +36,6 @@ async fn main() -> Result<()> {
         Ok(true) => info!("✓ Backpack is healthy"),
         Ok(false) => warn!("⚠️  Backpack health check returned false"),
         Err(e) => error!("✗ Backpack health check failed: {}", e),
-    }
-
-    match hibachi_client.health_check().await {
-        Ok(true) => info!("✓ Hibachi is healthy"),
-        Ok(false) => warn!("⚠️  Hibachi health check returned false"),
-        Err(e) => error!("✗ Hibachi health check failed: {}", e),
     }
 
 
