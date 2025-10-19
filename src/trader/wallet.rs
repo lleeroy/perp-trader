@@ -2,7 +2,9 @@ use std::{fs::File, io::BufReader};
 use serde::Deserialize;
 use anyhow::{Result};
 
+/// Wallet struct containing API secrets for authentication with exchanges
 #[derive(Debug, Clone, Deserialize)]
+#[allow(unused)]
 pub struct Wallet {
     pub id: u8,
     pub backpack_api_key: String,
@@ -11,8 +13,23 @@ pub struct Wallet {
     pub hibachi_api_secret: String,
 }
 
+#[allow(unused)]
 impl Wallet {
     /// Creates a new Wallet from the given id by loading from "api-keys.json"
+    ///
+    /// # Arguments
+    ///
+    /// * `id` - The id of the wallet to load from "api-keys.json".
+    ///
+    /// # Returns
+    ///
+    /// # Returns
+    ///
+    /// * `Wallet` - The wallet struct loaded from "api-keys.json".
+    ///
+    /// # Errors
+    ///
+    /// * `anyhow::Error` - If the wallet is not found in "api-keys.json" or if the JSON is invalid.
     pub fn load_from_json(id: u8) -> Result<Self> {
         let file = File::open("api-keys.json")?;
         let reader = BufReader::new(file);

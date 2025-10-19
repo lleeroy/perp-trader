@@ -33,6 +33,9 @@ pub enum TradingError {
     #[error("Exchange error: {0}")]
     ExchangeError(String),
 
+    #[error("Order execution failed: {0}")]
+    OrderExecutionFailed(String),
+
     #[error("Invalid leverage: {0}")]
     InvalidLeverage(String),
 

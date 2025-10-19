@@ -5,7 +5,8 @@ use rust_decimal::Decimal;
 
 use crate::config::ExchangeCredentials;
 use crate::error::TradingError;
-use crate::model::{Balance};
+use crate::model::token::Token;
+use crate::model::{balance::Balance, position::{Position, PositionSide}};
 use crate::perp::PerpExchange;
 use crate::trader::wallet::Wallet;
 
@@ -54,6 +55,17 @@ impl PerpExchange for HibachiClient {
         // TODO: Implement actual API call
         log::warn!("Hibachi get_balances not fully implemented");
         Ok(vec![])
+    }
+
+    async fn open_position(&self, token: Token, side: PositionSide, amount_usdc: Decimal) -> Result<Position, TradingError> {
+        // TODO: Implement actual API call
+        todo!("Hibachi open_position not fully implemented for {}", side);
+    }
+
+    async fn get_usdc_balance(&self) -> Result<Decimal, TradingError> {
+        // TODO: Implement actual API call
+        log::warn!("Hibachi get_usdc_balance not fully implemented");
+        Ok(Decimal::ZERO)
     }
 }
 

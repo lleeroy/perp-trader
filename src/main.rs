@@ -8,29 +8,31 @@ mod perp;
 mod request;
 mod trader;
 
-use anyhow::{bail, Context, Result};
-use std::sync::Arc;
-
-use config::AppConfig;
+use anyhow::{Context, Result};
 use perp::backpack::BackpackClient;
-
-use crate::{perp::PerpExchange, trader::wallet::Wallet};
+use crate::{model::{token::Token, PositionSide}, perp::PerpExchange, trader::{client::TraderClient, wallet::Wallet}};
 
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logger
     pretty_env_logger::init();
-
-    info!("🔧 Loading configuration...");
-    let config = AppConfig::load().context("Failed to load configuration")?;
-    let config = Arc::new(config);
 
     info!("🔌 Initializing exchange clients...");
     let wallet = Wallet::load_from_json(1).context("Failed to load wallet")?;
+    let trader_client = TraderClient::new_by_wallet_id(1).context("Failed to create trader client")?;
     let backpack_client = BackpackClient::new(&wallet);
+    
+    let usdc_balance = backpack_client.get_usdc_balance().await.context("Failed to get USDC balance")?;
+    info!("USDC balance: {}", usdc_balance);
 
-    let balances = backpack_client.get_balances().await.context("Failed to get balances")?;
-    info!("Balances: {:?}", balances);
+    let supported_tokens = trader_client.get_supported_tokens();
+    info!("Supported tokens: {:?}", supported_tokens);
+
+    backpack_client.open_position(
+        Token::sol(), 
+        PositionSide::Long, 
+        usdc_balance
+    ).await?;
+
     Ok(())
 }

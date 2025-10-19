@@ -1,4 +1,3 @@
 pub mod storage;
 pub mod wallet;
-
-pub use storage::PositionStorage;
+pub mod client;

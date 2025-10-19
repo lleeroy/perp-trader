@@ -1,6 +1,10 @@
+#![allow(unused)]
+
 use async_trait::async_trait;
+use rust_decimal::Decimal;
 use crate::error::TradingError;
-use crate::model::{Balance};
+use crate::model::token::Token;
+use crate::model::{balance::Balance, position::{Position, PositionSide}};
 
 /// Trait for perpetual futures exchange operations
 #[async_trait]
@@ -16,5 +20,11 @@ pub trait PerpExchange: Send + Sync {
 
     /// Get all account balances
     async fn get_balances(&self) -> Result<Vec<Balance>, TradingError>;
+
+    /// Open a new position on the exchange
+    async fn open_position(&self, token: Token, side: PositionSide, amount_usdc: Decimal) -> Result<Position, TradingError>;
+
+    /// Get the USDC balance for the account
+    async fn get_usdc_balance(&self) -> Result<Decimal, TradingError>;
 }
 
