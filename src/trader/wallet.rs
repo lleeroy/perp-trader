@@ -2,6 +2,8 @@ use std::{fs::File, io::BufReader};
 use serde::{Deserialize, Serialize};
 use anyhow::{Result};
 
+use crate::error::TradingError;
+
 /// Wallet struct containing API secrets for authentication with exchanges
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(unused)]
@@ -30,20 +32,20 @@ impl Wallet {
     /// # Errors
     ///
     /// * `anyhow::Error` - If the wallet is not found in "api-keys.json" or if the JSON is invalid.
-    pub fn load_from_json(id: u8) -> Result<Self> {
-        let file = File::open("api-keys.json")?;
+    pub fn load_from_json(id: u8) -> Result<Self, TradingError> {
+        let file = File::open("api-keys.json").map_err(|e| TradingError::InvalidInput(e.to_string()))?;
         let reader = BufReader::new(file);
 
         // The JSON in api-keys.json is a map from id (as string) to wallet values
-        let wallets_map: serde_json::Value = serde_json::from_reader(reader)?;
+        let wallets_map: serde_json::Value = serde_json::from_reader(reader).map_err(|e| TradingError::InvalidInput(e.to_string()))?;
 
         // Convert id to string for lookup, eg: "1"
         let id_key = id.to_string();
         let wallet_value = wallets_map.get(&id_key)
-            .ok_or_else(|| anyhow::anyhow!("Wallet id '{}' not found in api-keys.json", id))?;
+            .ok_or_else(|| TradingError::InvalidInput(format!("Wallet id '{}' not found in api-keys.json", id)))?;
 
         // Deserialize the found value to the Wallet struct
-        let wallet: Wallet = serde_json::from_value(wallet_value.clone())?;
+        let wallet: Wallet = serde_json::from_value(wallet_value.clone()).map_err(|e| TradingError::InvalidInput(e.to_string()))?;
         Ok(wallet)
     }
 }

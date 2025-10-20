@@ -24,6 +24,9 @@ pub trait PerpExchange: Send + Sync {
     /// Open a new position on the exchange
     async fn open_position(&self, token: Token, side: PositionSide, amount_usdc: Decimal) -> Result<Position, TradingError>;
 
+    /// Close a position on the exchange
+    async fn close_position(&self, position: &Position) -> Result<Position, TradingError>;
+
     /// Get the USDC balance for the account
     async fn get_usdc_balance(&self) -> Result<Decimal, TradingError>;
 }

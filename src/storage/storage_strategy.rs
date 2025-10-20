@@ -28,6 +28,7 @@ impl StrategyStorage {
             CREATE TABLE IF NOT EXISTS strategies (
                 id TEXT PRIMARY KEY,
                 token_symbol TEXT NOT NULL,
+                wallet_ids TEXT NOT NULL,
                 longs_size TEXT NOT NULL,
                 shorts_size TEXT NOT NULL,
                 status TEXT NOT NULL,
@@ -68,6 +69,13 @@ impl StrategyStorage {
 
     /// Save or update a strategy
     pub async fn save_strategy(&self, strategy: &TradingStrategy) -> Result<(), TradingError> {
+        let wallet_ids = strategy
+            .wallet_ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+
         let long_position_ids = strategy
             .longs
             .iter()
@@ -85,10 +93,11 @@ impl StrategyStorage {
         sqlx::query(
             r#"
             INSERT INTO strategies 
-            (id, token_symbol, longs_size, shorts_size, status, opened_at, updated_at, close_at, closed_at, realized_pnl, long_position_ids, short_position_ids)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            (id, token_symbol, wallet_ids, longs_size, shorts_size, status, opened_at, updated_at, close_at, closed_at, realized_pnl, long_position_ids, short_position_ids)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             ON CONFLICT (id) DO UPDATE SET
                 token_symbol = EXCLUDED.token_symbol,
+                wallet_ids = EXCLUDED.wallet_ids,
                 longs_size = EXCLUDED.longs_size,
                 shorts_size = EXCLUDED.shorts_size,
                 status = EXCLUDED.status,
@@ -103,6 +112,7 @@ impl StrategyStorage {
         )
         .bind(&strategy.id)
         .bind(&strategy.token_symbol)
+        .bind(wallet_ids)
         .bind(strategy.longs_size.to_string())
         .bind(strategy.shorts_size.to_string())
         .bind(strategy.status.to_string())
@@ -126,7 +136,7 @@ impl StrategyStorage {
     ) -> Result<Option<StrategyMetadata>, TradingError> {
         let row = sqlx::query(
             r#"
-            SELECT id, token_symbol, longs_size, shorts_size, status, opened_at, updated_at, 
+            SELECT id, token_symbol, wallet_ids, longs_size, shorts_size, status, opened_at, updated_at, 
                    close_at, closed_at, realized_pnl, long_position_ids, short_position_ids
             FROM strategies WHERE id = $1
             "#,
@@ -139,6 +149,7 @@ impl StrategyStorage {
             Some(row) => Ok(Some(StrategyMetadata {
                 id: row.try_get("id")?,
                 token_symbol: row.try_get("token_symbol")?,
+                wallet_ids: parse_wallet_ids(row.try_get("wallet_ids")?),
                 longs_size: Decimal::from_str(row.try_get("longs_size")?).unwrap(),
                 shorts_size: Decimal::from_str(row.try_get("shorts_size")?).unwrap(),
                 status: StrategyStatus::from_str(row.try_get("status")?).unwrap(),
@@ -160,7 +171,7 @@ impl StrategyStorage {
     pub async fn get_active_strategies(&self) -> Result<Vec<StrategyMetadata>, TradingError> {
         let rows = sqlx::query(
             r#"
-            SELECT id, token_symbol, longs_size, shorts_size, status, opened_at, updated_at, 
+            SELECT id, token_symbol, wallet_ids, longs_size, shorts_size, status, opened_at, updated_at, 
                    close_at, closed_at, realized_pnl, long_position_ids, short_position_ids
             FROM strategies WHERE status IN ('RUNNING', 'CLOSING') ORDER BY close_at ASC
             "#,
@@ -174,6 +185,7 @@ impl StrategyStorage {
                 Ok(StrategyMetadata {
                     id: row.try_get("id")?,
                     token_symbol: row.try_get("token_symbol")?,
+                    wallet_ids: parse_wallet_ids(row.try_get("wallet_ids")?),
                     longs_size: Decimal::from_str(row.try_get("longs_size")?).unwrap(),
                     shorts_size: Decimal::from_str(row.try_get("shorts_size")?).unwrap(),
                     status: StrategyStatus::from_str(row.try_get("status")?).unwrap(),
@@ -198,7 +210,7 @@ impl StrategyStorage {
         let now = Utc::now();
         let rows = sqlx::query(
             r#"
-            SELECT id, token_symbol, longs_size, shorts_size, status, opened_at, updated_at, 
+            SELECT id, token_symbol, wallet_ids, longs_size, shorts_size, status, opened_at, updated_at, 
                    close_at, closed_at, realized_pnl, long_position_ids, short_position_ids
             FROM strategies WHERE status = 'RUNNING' AND close_at <= $1 ORDER BY close_at ASC
             "#,
@@ -213,6 +225,7 @@ impl StrategyStorage {
                 Ok(StrategyMetadata {
                     id: row.try_get("id")?,
                     token_symbol: row.try_get("token_symbol")?,
+                    wallet_ids: parse_wallet_ids(row.try_get("wallet_ids")?),
                     longs_size: Decimal::from_str(row.try_get("longs_size")?).unwrap(),
                     shorts_size: Decimal::from_str(row.try_get("shorts_size")?).unwrap(),
                     status: StrategyStatus::from_str(row.try_get("status")?).unwrap(),
@@ -264,7 +277,7 @@ impl StrategyStorage {
     pub async fn get_all_strategies(&self) -> Result<Vec<StrategyMetadata>, TradingError> {
         let rows = sqlx::query(
             r#"
-            SELECT id, token_symbol, longs_size, shorts_size, status, opened_at, updated_at, 
+            SELECT id, token_symbol, wallet_ids, longs_size, shorts_size, status, opened_at, updated_at, 
                    close_at, closed_at, realized_pnl, long_position_ids, short_position_ids
             FROM strategies ORDER BY opened_at DESC
             "#,
@@ -278,6 +291,7 @@ impl StrategyStorage {
                 Ok(StrategyMetadata {
                     id: row.try_get("id")?,
                     token_symbol: row.try_get("token_symbol")?,
+                    wallet_ids: parse_wallet_ids(row.try_get("wallet_ids")?),
                     longs_size: Decimal::from_str(row.try_get("longs_size")?).unwrap(),
                     shorts_size: Decimal::from_str(row.try_get("shorts_size")?).unwrap(),
                     status: StrategyStatus::from_str(row.try_get("status")?).unwrap(),
@@ -303,6 +317,7 @@ impl StrategyStorage {
 pub struct StrategyMetadata {
     pub id: String,
     pub token_symbol: String,
+    pub wallet_ids: Vec<u8>,
     pub longs_size: Decimal,
     pub shorts_size: Decimal,
     pub status: StrategyStatus,
@@ -337,5 +352,14 @@ fn parse_position_ids(ids_str: &str) -> Vec<String> {
         Vec::new()
     } else {
         ids_str.split(',').map(|s| s.to_string()).collect()
+    }
+}
+
+/// Parse comma-separated wallet IDs
+fn parse_wallet_ids(ids_str: &str) -> Vec<u8> {
+    if ids_str.is_empty() {
+        Vec::new()
+    } else {
+        ids_str.split(',').filter_map(|s| s.parse::<u8>().ok()).collect()
     }
 }

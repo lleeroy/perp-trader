@@ -1,33 +1,189 @@
-#![allow(unused)]
 
 use crate::{
-    error::TradingError, model::{position::{Position, PositionStatus}, token::Token}, perp::{backpack::BackpackClient, PerpExchange}, storage::{storage_position::PositionStorage, storage_strategy::{StrategyMetadata, StrategyStorage}}, trader::{
-        strategy::TradingStrategy, wallet::Wallet
-    }
+    error::TradingError, 
+    model::{position::{Position, PositionStatus}, 
+    token::Token}, 
+    perp::{backpack::BackpackClient, PerpExchange}, 
+    storage::{storage_position::PositionStorage, storage_strategy::{StrategyMetadata, StrategyStorage}}, 
+    trader::{strategy::TradingStrategy, wallet::Wallet}
 };
+
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use rand::seq::SliceRandom;
 use sqlx::PgPool;
+use tokio::time::{sleep, Duration};
+
 
 pub struct TraderClient {
-    wallet: Wallet,
+    wallets: Vec<Wallet>,
     position_storage: PositionStorage,
     strategy_storage: StrategyStorage,
 }
 
 impl TraderClient {
     /// Create a new trader client with a database pool
-    pub async fn new(wallet_id: u8, pool: PgPool) -> Result<Self, TradingError> {
-        let wallet = Wallet::load_from_json(wallet_id)?;
+    pub async fn new(wallet_ids: Vec<u8>, pool: PgPool) -> Result<Self, TradingError> {
+
+        if wallet_ids.is_empty() {
+            return Err(TradingError::InvalidInput("No wallet IDs provided".into()));
+        }
+
+        if wallet_ids.len() < 3 {
+            return Err(TradingError::InvalidInput("At least 3 wallets are required".into()));
+        }
+
+        let wallets = wallet_ids.iter()
+            .map(|id| Wallet::load_from_json(*id))
+            .collect::<Result<Vec<Wallet>, TradingError>>()?;
+
         let position_storage = PositionStorage::new(pool.clone()).await?;
         let strategy_storage = StrategyStorage::new(pool).await?;
 
         Ok(Self { 
-            wallet, 
+            wallets, 
             position_storage,
             strategy_storage,
         })
+    }
+
+    /// Monitor and close strategies when they reach their close_at time
+    ///
+    /// # Arguments
+    /// * `strategies` - Vector of strategy metadata to monitor
+    ///
+    /// # Returns
+    /// * `Ok(())` - All strategies were successfully closed
+    /// * `Err(TradingError)` - If any error occurs during monitoring/closing
+    async fn monitor_and_close_strategies(
+        &self,
+        strategies: Vec<StrategyMetadata>,
+    ) -> Result<(), TradingError> {
+        if strategies.is_empty() {
+            return Err(TradingError::InvalidInput("No strategies provided".into()));
+        }
+
+        // Find the earliest close time across all strategies
+        let earliest_close = strategies.iter()
+            .map(|s| s.close_at)
+            .min()
+            .unwrap_or_else(Utc::now);
+
+        // Display strategies being monitored
+        info!("📋 Monitoring {} strategies:", strategies.len());
+        for strategy in &strategies {
+            info!("  🎯 Strategy {} | Token: {} | Wallets: {:?} | Close at: {}", 
+                strategy.id, strategy.token_symbol, strategy.wallet_ids, strategy.close_at);
+        }
+
+        // Wait until the earliest close time
+        let now = Utc::now();
+        if earliest_close > now {
+            let wait_duration = (earliest_close - now).to_std()
+                .unwrap_or(Duration::from_secs(0));
+            
+            info!("⏳ Waiting {} seconds until first strategy close time...", wait_duration.as_secs());
+            sleep(wait_duration).await;
+        }
+
+        // Close each strategy
+        for strategy in strategies {
+            // Check if it's time to close this strategy
+            let now = Utc::now();
+            if strategy.close_at > now {
+                let remaining = (strategy.close_at - now).to_std()
+                    .unwrap_or(Duration::from_secs(0));
+                if remaining.as_secs() > 0 {
+                    info!("⏳ Waiting {} seconds before closing strategy {}...", 
+                        remaining.as_secs(), strategy.id);
+                    sleep(remaining).await;
+                }
+            }
+
+            info!("🔄 Closing strategy {} ({})", strategy.id, strategy.token_symbol);
+            
+            // Update strategy status to Closing
+            self.strategy_storage.update_strategy_status(
+                &strategy.id,
+                crate::trader::strategy::StrategyStatus::Closing,
+                None,
+                None,
+            ).await?;
+
+            // Get all positions for this strategy
+            let all_position_ids = strategy.get_all_position_ids();
+            let mut closed_positions = Vec::new();
+            let mut has_failures = false;
+
+            // Close each position in the strategy
+            for position_id in all_position_ids {
+                if let Some(position) = self.position_storage.get_position(&position_id).await? {
+                    // Find the wallet for this position
+                    let wallet = self.wallets.iter().find(|w| w.id == position.wallet_id)
+                        .ok_or_else(|| TradingError::InvalidInput(
+                            format!("Wallet #{} not found for position {}", position.wallet_id, position.id)
+                        ))?;
+
+                    // Create client and close position
+                    let client = BackpackClient::new(wallet);
+                    
+                    match client.close_position(&position).await {
+                        Ok(closed_position) => {
+                            // Update position in database
+                            self.position_storage.update_position_status(
+                                &closed_position.id,
+                                PositionStatus::Closed,
+                                closed_position.closed_at,
+                                closed_position.realized_pnl,
+                            ).await?;
+                            
+                            if let Some(pnl) = closed_position.realized_pnl {
+                                closed_positions.push((closed_position.id.clone(), pnl));
+                                info!("  ✅ Position {} closed | PnL: {:.2}", closed_position.id, pnl);
+                            } else {
+                                info!("  ✅ Position {} closed | PnL: N/A", closed_position.id);
+                            }
+                        }
+                        Err(e) => {
+                            error!("  ❌ Failed to close position {}: {}", position.id, e);
+                            has_failures = true;
+
+                            // Mark position as failed but continue with other positions
+                            self.position_storage.update_position_status(
+                                &position.id,
+                                PositionStatus::Failed,
+                                Some(Utc::now()),
+                                None,
+                            ).await?;
+                        }
+                    }
+                }
+            }
+
+            // Calculate total PnL for the strategy
+            let total_pnl: Decimal = closed_positions.iter()
+                .map(|(_, pnl)| pnl)
+                .sum();
+
+            // Update strategy status based on whether there were failures
+            let final_status = if has_failures {
+                crate::trader::strategy::StrategyStatus::Failed
+            } else {
+                crate::trader::strategy::StrategyStatus::Closed
+            };
+
+            self.strategy_storage.update_strategy_status(
+                &strategy.id,
+                final_status,
+                Some(Utc::now()),
+                Some(total_pnl),
+            ).await?;
+
+            info!("💰 Strategy {} completed | Status: {} | Total PnL: {:.2} USDC", 
+                strategy.id, final_status, total_pnl);
+        }
+
+        Ok(())
     }
 
     /// Farm points on Backpack using multiple wallets with balanced long/short positions
@@ -41,28 +197,48 @@ impl TraderClient {
     /// * `Err(TradingError)` - If any error occurs during execution
     /// 
     /// # Strategy
-    /// - Fetches USDC balance from each wallet
+    /// - First checks if any wallets are involved in active strategies
+    /// - If active strategies found: waits for them to complete before proceeding
+    /// - Then checks if any wallets have orphaned active positions
+    /// - For wallets with existing positions: monitors them until close time
+    /// - For wallets without positions: creates new trades
+    /// - Fetches USDC balance from each available wallet
     /// - Randomly selects a token to trade
     /// - Generates balanced long/short allocations (market neutral)
-    /// - Opens positions on all wallets
+    /// - Opens positions on available wallets
     /// - Returns a TradingStrategy tracking all positions
     pub async fn farm_points_on_backpack_from_multiple_wallets(
-        wallets: Vec<Wallet>,
-        pool: PgPool,
+        &self,
     ) -> Result<TradingStrategy, TradingError> {
-        if wallets.is_empty() {
-            return Err(TradingError::InvalidInput("No wallets provided".into()));
+        info!("🎯 Starting farming strategy with {} wallets", self.wallets.len());
+        let active_strategies = self.strategy_storage.get_active_strategies().await?;
+        
+        // Filter strategies that involve any of our wallet IDs
+        let conflicting_strategies: Vec<StrategyMetadata> = active_strategies
+            .into_iter()
+            .filter(|strategy| {
+                strategy.wallet_ids.iter().any(|id| self.wallets.iter().any(|w| w.id == *id))
+            })
+            .collect();
+
+        if !conflicting_strategies.is_empty() {
+            info!("⚠️  Found {} active strategies involving the provided wallets", conflicting_strategies.len());
+            info!("📋 Waiting for these strategies to complete before starting new trades...");
+            
+            // Monitor and close all conflicting strategies
+            self.monitor_and_close_strategies(conflicting_strategies).await?;
+
+            // After closing, we need to call the function again to start new trades
+            return Err(TradingError::InvalidInput(
+                "Active strategies were completed. Please call the function again to create new trades.".into()
+            ));
         }
 
-        if wallets.len() < 3 {
-            return Err(TradingError::InvalidInput("At least 3 wallets are required".into()));
-        }
-
-        info!("🎯 Starting farming strategy with {} wallets", wallets.len());
+        info!("✅ No active strategies found for these wallets.");
 
         // Step 1: Fetch USDC balances from all wallets
         let mut wallet_balances = Vec::new();
-        for wallet in &wallets {
+        for wallet in &self.wallets {
             let client = BackpackClient::new(wallet);
             let balance = client.get_usdc_balance().await?;
             
@@ -95,7 +271,7 @@ impl TraderClient {
         
         for allocation in allocations {
             // Find the wallet for this allocation
-            let wallet = wallets
+            let wallet = self.wallets
                 .iter()
                 .find(|w| w.id == allocation.wallet_id)
                 .ok_or_else(|| TradingError::InvalidInput(
@@ -136,14 +312,7 @@ impl TraderClient {
         }
         
         // Save strategy first
-        let strategy_storage = StrategyStorage::new(pool.clone()).await?;
-        strategy_storage.save_strategy(&strategy).await?;
-        
-        // Save all positions
-        let position_storage = PositionStorage::new(pool).await?;
-        for position in strategy.longs.iter().chain(strategy.shorts.iter()) {
-            position_storage.save_position(position).await?;
-        }
+        self.strategy_storage.save_strategy(&strategy).await?;
         
         info!("✅ Strategy {} executed successfully!", strategy_id);
         info!("   Token: {}", strategy.token_symbol);
@@ -154,37 +323,45 @@ impl TraderClient {
         Ok(strategy)
     }
 
+
+    #[allow(unused)]
     pub fn get_supported_tokens(&self) -> Vec<Token> {
         Token::get_supported_tokens()
     }
 
     // ===== Position Storage Methods =====
     /// Save or update a position in storage
+    #[allow(unused)]
     pub async fn save_position(&self, position: &Position) -> Result<(), TradingError> {
         self.position_storage.save_position(position).await
     }
 
     /// Get a specific position by ID
+    #[allow(unused)]
     pub async fn get_position(&self, id: &str) -> Result<Option<Position>, TradingError> {
         self.position_storage.get_position(id).await
     }
 
     /// Get all stored positions
+    #[allow(unused)]
     pub async fn get_all_positions(&self) -> Result<Vec<Position>, TradingError> {
         self.position_storage.get_all_positions().await
     }
 
     /// Get positions for a specific exchange
+    #[allow(unused)]
     pub async fn get_positions_by_exchange(&self, exchange: crate::model::exchange::Exchange) -> Result<Vec<Position>, TradingError> {
         self.position_storage.get_positions_by_exchange(exchange).await
     }
 
     /// Get all active (Open or Closing) positions
+    #[allow(unused)]
     pub async fn get_active_positions(&self) -> Result<Vec<Position>, TradingError> {
         self.position_storage.get_active_positions().await
     }
 
     /// Update a position's status and related fields
+    #[allow(unused)]
     pub async fn update_position_status(
         &self,
         id: &str,
@@ -196,22 +373,26 @@ impl TraderClient {
     }
 
     /// Delete a position from storage (use sparingly)
+    #[allow(unused)]
     pub async fn delete_position(&self, id: &str) -> Result<(), TradingError> {
         self.position_storage.delete_position(id).await
     }
 
     // ===== Strategy Storage Methods =====
     /// Save or update a strategy in storage
+    #[allow(unused)]
     pub async fn save_strategy(&self, strategy: &TradingStrategy) -> Result<(), TradingError> {
         self.strategy_storage.save_strategy(strategy).await
     }
 
     /// Get all active strategies
+    #[allow(unused)]
     pub async fn get_active_strategies(&self) -> Result<Vec<StrategyMetadata>, TradingError> {
         self.strategy_storage.get_active_strategies().await
     }
 
     /// Get all strategies
+    #[allow(unused)]
     pub async fn get_all_strategies(&self) -> Result<Vec<StrategyMetadata>, TradingError> {
         self.strategy_storage.get_all_strategies().await
     }

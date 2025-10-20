@@ -68,5 +68,10 @@ impl PerpExchange for HibachiClient {
         log::warn!("Hibachi get_usdc_balance not fully implemented");
         Ok(Decimal::ZERO)
     }
+
+    async fn close_position(&self, position: &Position) -> Result<Position, TradingError> {
+        // TODO: Implement actual API call
+        todo!("Hibachi close_position not fully implemented for {}", position.side);
+    }
 }
 

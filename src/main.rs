@@ -12,13 +12,12 @@ mod storage;
 use anyhow::{Context, Result};
 use crate::config::AppConfig;
 use crate::storage::init_pool;
-use crate::trader::{client::TraderClient, wallet::Wallet};
+use crate::trader::client::TraderClient;
 
 
 #[tokio::main]
 async fn main() -> Result<()> {
     pretty_env_logger::init();
-
     info!("🚀 Starting perp-trader application...");
 
     // Load configuration
@@ -32,9 +31,11 @@ async fn main() -> Result<()> {
 
     // Initialize trader client
     info!("🔌 Initializing exchange clients...");
-    let wallet = Wallet::load_from_json(1).context("Failed to load wallet")?;
-    let trader_client = TraderClient::new(1, pool).await.context("Failed to create trader client")?;
+    let wallet_ids = vec![1, 2, 3];
+    let trader_client = TraderClient::new(wallet_ids, pool).await.context("Failed to create trader client")?;
     info!("✅ Trader client initialized");
+
+    trader_client.farm_points_on_backpack_from_multiple_wallets().await?;
 
     // Application ready
     info!("✅ Application initialized successfully");

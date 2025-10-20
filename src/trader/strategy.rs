@@ -9,6 +9,7 @@ use crate::{error::TradingError, model::{Position, PositionSide}};
 pub struct TradingStrategy {
     pub id: String,
     pub token_symbol: String,
+    pub wallet_ids: Vec<u8>,
     pub longs: Vec<Position>,
     pub shorts: Vec<Position>,
     pub shorts_size: Decimal,
@@ -79,6 +80,14 @@ impl TradingStrategy {
         let longs_size = longs.iter().map(|l| l.size).sum();
         let shorts_size = shorts.iter().map(|s| s.size).sum();
         
+        // Extract unique wallet IDs from all positions
+        let mut wallet_ids: Vec<u8> = longs.iter()
+            .chain(shorts.iter())
+            .map(|p| p.wallet_id)
+            .collect();
+        wallet_ids.sort_unstable();
+        wallet_ids.dedup();
+        
         // Get timestamps from first available position
         let first_position = longs.first().or(shorts.first()).unwrap();
         let opened_at = first_position.opened_at;
@@ -91,6 +100,7 @@ impl TradingStrategy {
         Ok(Self {
             id,
             token_symbol,
+            wallet_ids,
             longs,
             shorts,
             shorts_size,
@@ -104,11 +114,13 @@ impl TradingStrategy {
         })
     }
 
+    #[allow(unused)]
     /// Check if the strategy should be closed based on current time
     pub fn should_close(&self) -> bool {
         Utc::now() >= self.close_at && self.status == StrategyStatus::Running
     }
 
+    #[allow(unused)]
     /// Get all position IDs in this strategy
     pub fn get_all_position_ids(&self) -> Vec<String> {
         self.longs
@@ -118,6 +130,7 @@ impl TradingStrategy {
             .collect()
     }
 
+    #[allow(unused)]
     /// Calculate total PnL from all positions
     pub fn calculate_total_pnl(&self) -> Option<Decimal> {
         let all_positions: Vec<&Position> = self.longs

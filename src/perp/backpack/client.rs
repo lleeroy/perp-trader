@@ -197,6 +197,73 @@ impl PerpExchange for BackpackClient {
         }
     }
 
+    /// Closes a position on the Backpack exchange.
+    ///
+    /// # Arguments
+    ///
+    /// * `position` - The position to close.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Position)` containing the details of the closed position, or a `TradingError`.
+    async fn close_position(&self, position: &Position) -> Result<Position, TradingError> {
+        info!("#{} | Closing {} position on {} | Size: {}", 
+            self.wallet.id, position.side, position.symbol, position.size);
+
+        // To close a position, we need to open an opposite side order with the same size
+        let opposite_side = match position.side {
+            PositionSide::Long => PositionSide::Short,
+            PositionSide::Short => PositionSide::Long,
+        };
+
+        // Create the close order payload
+        let close_payload = ExecuteOrderPayload {
+            symbol: position.symbol.clone(),
+            auto_lend: Some(true),
+            auto_lend_redeem: Some(true),
+            auto_borrow: Some(true),
+            auto_borrow_repay: Some(true),
+            order_type: OrderType::Market,
+            quantity: Some(position.size),
+            side: match opposite_side {
+                PositionSide::Long => Side::Ask,
+                PositionSide::Short => Side::Bid,
+            },
+            ..Default::default()
+        };
+
+        let order = self.client.execute_order(close_payload)
+            .await
+            .map_err(|e| TradingError::OrderExecutionFailed(
+                format!("Failed to close position: {}", e)
+            ))?;
+
+        match order {
+            Order::Market(market_order) => {
+                let closed_at = DateTime::from_timestamp_millis(market_order.created_at as i64)
+                    .ok_or_else(|| TradingError::OrderExecutionFailed(
+                        "Invalid timestamp from close order".to_string()
+                    ))?;
+
+                info!("#{} | 🔴 <{}> position closed on {} | PnL: {:.2} USDC", 
+                    self.wallet.id, position.side, position.symbol, market_order.executed_quote_quantity);
+
+                let mut closed_position = position.clone();
+                closed_position.status = PositionStatus::Closed;
+                closed_position.closed_at = Some(closed_at);
+                closed_position.updated_at = closed_at;
+                // PnL calculation: For now using the executed quote quantity as a proxy
+                // In a real scenario, you'd calculate this based on entry and exit prices
+                closed_position.realized_pnl = Some(market_order.executed_quote_quantity);
+
+                Ok(closed_position)
+            }
+            _ => Err(TradingError::OrderExecutionFailed(
+                "Expected market order but received different order type".to_string()
+            )),
+        }
+    }
+
     /// Fetches the USDC balance for the account from the Backpack exchange.
     ///
     /// # Returns
