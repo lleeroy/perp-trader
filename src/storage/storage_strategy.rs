@@ -1,221 +1,239 @@
 #![allow(unused)]
 
 use crate::error::TradingError;
-use crate::trader::strategy::{TradingStrategy, StrategyStatus};
+use crate::trader::strategy::{StrategyStatus, TradingStrategy};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, Connection, OptionalExtension};
 use rust_decimal::Decimal;
-use std::path::Path;
+use sqlx::{PgPool, Row};
 use std::str::FromStr;
 
-/// SQLite-based storage for trading strategies
+/// PostgreSQL-based storage for trading strategies
 pub struct StrategyStorage {
-    conn: Connection,
+    pool: PgPool,
 }
 
 impl StrategyStorage {
-    /// Create a new storage instance with a database file
-    pub fn new<P: AsRef<Path>>(db_path: P) -> Result<Self, TradingError> {
-        let conn = Connection::open(db_path)?;
-        let storage = Self { conn };
-        storage.init_schema()?;
+    /// Create a new storage instance with a database pool
+    pub async fn new(pool: PgPool) -> Result<Self, TradingError> {
+        let storage = Self { pool };
+        storage.init_schema().await?;
         Ok(storage)
     }
 
     /// Initialize the database schema
-    fn init_schema(&self) -> Result<(), TradingError> {
+    async fn init_schema(&self) -> Result<(), TradingError> {
         // Create strategies table
-        self.conn.execute(
-            "CREATE TABLE IF NOT EXISTS strategies (
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS strategies (
                 id TEXT PRIMARY KEY,
                 token_symbol TEXT NOT NULL,
                 longs_size TEXT NOT NULL,
                 shorts_size TEXT NOT NULL,
                 status TEXT NOT NULL,
-                opened_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL,
-                close_at TEXT NOT NULL,
-                closed_at TEXT,
+                opened_at TIMESTAMPTZ NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL,
+                close_at TIMESTAMPTZ NOT NULL,
+                closed_at TIMESTAMPTZ,
                 realized_pnl TEXT,
                 long_position_ids TEXT NOT NULL,
                 short_position_ids TEXT NOT NULL
-            )",
-            [],
-        )?;
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
 
         // Create index for faster lookups
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_strategy_status 
-             ON strategies(status)",
-            [],
-        )?;
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_strategy_status 
+            ON strategies(status)
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
 
-        self.conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_strategy_close_at 
-             ON strategies(close_at)",
-            [],
-        )?;
+        sqlx::query(
+            r#"
+            CREATE INDEX IF NOT EXISTS idx_strategy_close_at 
+            ON strategies(close_at)
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }
 
     /// Save or update a strategy
-    pub fn save_strategy(&self, strategy: &TradingStrategy) -> Result<(), TradingError> {
-        let long_position_ids = strategy.longs
-            .iter()
-            .map(|p| p.id.clone())
-            .collect::<Vec<_>>()
-            .join(",");
-        
-        let short_position_ids = strategy.shorts
+    pub async fn save_strategy(&self, strategy: &TradingStrategy) -> Result<(), TradingError> {
+        let long_position_ids = strategy
+            .longs
             .iter()
             .map(|p| p.id.clone())
             .collect::<Vec<_>>()
             .join(",");
 
-        self.conn.execute(
-            "INSERT OR REPLACE INTO strategies 
-             (id, token_symbol, longs_size, shorts_size, status, opened_at, updated_at, close_at, closed_at, realized_pnl, long_position_ids, short_position_ids)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-            params![
-                strategy.id,
-                strategy.token_symbol,
-                strategy.longs_size.to_string(),
-                strategy.shorts_size.to_string(),
-                strategy.status.to_string(),
-                strategy.opened_at.to_rfc3339(),
-                strategy.updated_at.to_rfc3339(),
-                strategy.close_at.to_rfc3339(),
-                strategy.closed_at.map(|dt| dt.to_rfc3339()),
-                strategy.realized_pnl.map(|pnl| pnl.to_string()),
-                long_position_ids,
-                short_position_ids,
-            ],
-        )?;
+        let short_position_ids = strategy
+            .shorts
+            .iter()
+            .map(|p| p.id.clone())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        sqlx::query(
+            r#"
+            INSERT INTO strategies 
+            (id, token_symbol, longs_size, shorts_size, status, opened_at, updated_at, close_at, closed_at, realized_pnl, long_position_ids, short_position_ids)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            ON CONFLICT (id) DO UPDATE SET
+                token_symbol = EXCLUDED.token_symbol,
+                longs_size = EXCLUDED.longs_size,
+                shorts_size = EXCLUDED.shorts_size,
+                status = EXCLUDED.status,
+                opened_at = EXCLUDED.opened_at,
+                updated_at = EXCLUDED.updated_at,
+                close_at = EXCLUDED.close_at,
+                closed_at = EXCLUDED.closed_at,
+                realized_pnl = EXCLUDED.realized_pnl,
+                long_position_ids = EXCLUDED.long_position_ids,
+                short_position_ids = EXCLUDED.short_position_ids
+            "#,
+        )
+        .bind(&strategy.id)
+        .bind(&strategy.token_symbol)
+        .bind(strategy.longs_size.to_string())
+        .bind(strategy.shorts_size.to_string())
+        .bind(strategy.status.to_string())
+        .bind(strategy.opened_at)
+        .bind(strategy.updated_at)
+        .bind(strategy.close_at)
+        .bind(strategy.closed_at)
+        .bind(strategy.realized_pnl.map(|pnl| pnl.to_string()))
+        .bind(long_position_ids)
+        .bind(short_position_ids)
+        .execute(&self.pool)
+        .await?;
+
         Ok(())
     }
 
     /// Get a strategy by ID (without loading full position details)
-    pub fn get_strategy_metadata(&self, id: &str) -> Result<Option<StrategyMetadata>, TradingError> {
-        let metadata = self
-            .conn
-            .query_row(
-                "SELECT id, token_symbol, longs_size, shorts_size, status, opened_at, updated_at, close_at, closed_at, realized_pnl, long_position_ids, short_position_ids
-                 FROM strategies WHERE id = ?1",
-                params![id],
-                |row| {
-                    Ok(StrategyMetadata {
-                        id: row.get(0)?,
-                        token_symbol: row.get(1)?,
-                        longs_size: Decimal::from_str(&row.get::<_, String>(2)?).unwrap(),
-                        shorts_size: Decimal::from_str(&row.get::<_, String>(3)?).unwrap(),
-                        status: StrategyStatus::from_str(&row.get::<_, String>(4)?).unwrap(),
-                        opened_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
-                            .unwrap()
-                            .with_timezone(&Utc),
-                        updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
-                            .unwrap()
-                            .with_timezone(&Utc),
-                        close_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
-                            .unwrap()
-                            .with_timezone(&Utc),
-                        closed_at: row
-                            .get::<_, Option<String>>(8)?
-                            .map(|s| DateTime::parse_from_rfc3339(&s).unwrap().with_timezone(&Utc)),
-                        realized_pnl: row
-                            .get::<_, Option<String>>(9)?
-                            .and_then(|s| Decimal::from_str(&s).ok()),
-                        long_position_ids: parse_position_ids(&row.get::<_, String>(10)?),
-                        short_position_ids: parse_position_ids(&row.get::<_, String>(11)?),
-                    })
-                },
-            )
-            .optional()?;
+    pub async fn get_strategy_metadata(
+        &self,
+        id: &str,
+    ) -> Result<Option<StrategyMetadata>, TradingError> {
+        let row = sqlx::query(
+            r#"
+            SELECT id, token_symbol, longs_size, shorts_size, status, opened_at, updated_at, 
+                   close_at, closed_at, realized_pnl, long_position_ids, short_position_ids
+            FROM strategies WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
 
-        Ok(metadata)
+        match row {
+            Some(row) => Ok(Some(StrategyMetadata {
+                id: row.try_get("id")?,
+                token_symbol: row.try_get("token_symbol")?,
+                longs_size: Decimal::from_str(row.try_get("longs_size")?).unwrap(),
+                shorts_size: Decimal::from_str(row.try_get("shorts_size")?).unwrap(),
+                status: StrategyStatus::from_str(row.try_get("status")?).unwrap(),
+                opened_at: row.try_get("opened_at")?,
+                updated_at: row.try_get("updated_at")?,
+                close_at: row.try_get("close_at")?,
+                closed_at: row.try_get("closed_at")?,
+                realized_pnl: row
+                    .try_get::<Option<String>, _>("realized_pnl")?
+                    .and_then(|s| Decimal::from_str(&s).ok()),
+                long_position_ids: parse_position_ids(row.try_get("long_position_ids")?),
+                short_position_ids: parse_position_ids(row.try_get("short_position_ids")?),
+            })),
+            None => Ok(None),
+        }
     }
 
     /// Get all active strategies (Running or Closing status)
-    pub fn get_active_strategies(&self) -> Result<Vec<StrategyMetadata>, TradingError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, token_symbol, longs_size, shorts_size, status, opened_at, updated_at, close_at, closed_at, realized_pnl, long_position_ids, short_position_ids
-             FROM strategies WHERE status IN ('RUNNING', 'CLOSING') ORDER BY close_at ASC",
-        )?;
+    pub async fn get_active_strategies(&self) -> Result<Vec<StrategyMetadata>, TradingError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, token_symbol, longs_size, shorts_size, status, opened_at, updated_at, 
+                   close_at, closed_at, realized_pnl, long_position_ids, short_position_ids
+            FROM strategies WHERE status IN ('RUNNING', 'CLOSING') ORDER BY close_at ASC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
-        let strategies = stmt
-            .query_map([], |row| {
+        let strategies = rows
+            .iter()
+            .map(|row| {
                 Ok(StrategyMetadata {
-                    id: row.get(0)?,
-                    token_symbol: row.get(1)?,
-                    longs_size: Decimal::from_str(&row.get::<_, String>(2)?).unwrap(),
-                    shorts_size: Decimal::from_str(&row.get::<_, String>(3)?).unwrap(),
-                    status: StrategyStatus::from_str(&row.get::<_, String>(4)?).unwrap(),
-                    opened_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
-                        .unwrap()
-                        .with_timezone(&Utc),
-                    updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
-                        .unwrap()
-                        .with_timezone(&Utc),
-                    close_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
-                        .unwrap()
-                        .with_timezone(&Utc),
-                    closed_at: row
-                        .get::<_, Option<String>>(8)?
-                        .map(|s| DateTime::parse_from_rfc3339(&s).unwrap().with_timezone(&Utc)),
+                    id: row.try_get("id")?,
+                    token_symbol: row.try_get("token_symbol")?,
+                    longs_size: Decimal::from_str(row.try_get("longs_size")?).unwrap(),
+                    shorts_size: Decimal::from_str(row.try_get("shorts_size")?).unwrap(),
+                    status: StrategyStatus::from_str(row.try_get("status")?).unwrap(),
+                    opened_at: row.try_get("opened_at")?,
+                    updated_at: row.try_get("updated_at")?,
+                    close_at: row.try_get("close_at")?,
+                    closed_at: row.try_get("closed_at")?,
                     realized_pnl: row
-                        .get::<_, Option<String>>(9)?
+                        .try_get::<Option<String>, _>("realized_pnl")?
                         .and_then(|s| Decimal::from_str(&s).ok()),
-                    long_position_ids: parse_position_ids(&row.get::<_, String>(10)?),
-                    short_position_ids: parse_position_ids(&row.get::<_, String>(11)?),
+                    long_position_ids: parse_position_ids(row.try_get("long_position_ids")?),
+                    short_position_ids: parse_position_ids(row.try_get("short_position_ids")?),
                 })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+            })
+            .collect::<Result<Vec<_>, TradingError>>()?;
 
         Ok(strategies)
     }
 
     /// Get strategies that should be closed (close_at <= now and status = Running)
-    pub fn get_strategies_to_close(&self) -> Result<Vec<StrategyMetadata>, TradingError> {
-        let now = Utc::now().to_rfc3339();
-        let mut stmt = self.conn.prepare(
-            "SELECT id, token_symbol, longs_size, shorts_size, status, opened_at, updated_at, close_at, closed_at, realized_pnl, long_position_ids, short_position_ids
-             FROM strategies WHERE status = 'RUNNING' AND close_at <= ?1 ORDER BY close_at ASC",
-        )?;
+    pub async fn get_strategies_to_close(&self) -> Result<Vec<StrategyMetadata>, TradingError> {
+        let now = Utc::now();
+        let rows = sqlx::query(
+            r#"
+            SELECT id, token_symbol, longs_size, shorts_size, status, opened_at, updated_at, 
+                   close_at, closed_at, realized_pnl, long_position_ids, short_position_ids
+            FROM strategies WHERE status = 'RUNNING' AND close_at <= $1 ORDER BY close_at ASC
+            "#,
+        )
+        .bind(now)
+        .fetch_all(&self.pool)
+        .await?;
 
-        let strategies = stmt
-            .query_map(params![now], |row| {
+        let strategies = rows
+            .iter()
+            .map(|row| {
                 Ok(StrategyMetadata {
-                    id: row.get(0)?,
-                    token_symbol: row.get(1)?,
-                    longs_size: Decimal::from_str(&row.get::<_, String>(2)?).unwrap(),
-                    shorts_size: Decimal::from_str(&row.get::<_, String>(3)?).unwrap(),
-                    status: StrategyStatus::from_str(&row.get::<_, String>(4)?).unwrap(),
-                    opened_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
-                        .unwrap()
-                        .with_timezone(&Utc),
-                    updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
-                        .unwrap()
-                        .with_timezone(&Utc),
-                    close_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
-                        .unwrap()
-                        .with_timezone(&Utc),
-                    closed_at: row
-                        .get::<_, Option<String>>(8)?
-                        .map(|s| DateTime::parse_from_rfc3339(&s).unwrap().with_timezone(&Utc)),
+                    id: row.try_get("id")?,
+                    token_symbol: row.try_get("token_symbol")?,
+                    longs_size: Decimal::from_str(row.try_get("longs_size")?).unwrap(),
+                    shorts_size: Decimal::from_str(row.try_get("shorts_size")?).unwrap(),
+                    status: StrategyStatus::from_str(row.try_get("status")?).unwrap(),
+                    opened_at: row.try_get("opened_at")?,
+                    updated_at: row.try_get("updated_at")?,
+                    close_at: row.try_get("close_at")?,
+                    closed_at: row.try_get("closed_at")?,
                     realized_pnl: row
-                        .get::<_, Option<String>>(9)?
+                        .try_get::<Option<String>, _>("realized_pnl")?
                         .and_then(|s| Decimal::from_str(&s).ok()),
-                    long_position_ids: parse_position_ids(&row.get::<_, String>(10)?),
-                    short_position_ids: parse_position_ids(&row.get::<_, String>(11)?),
+                    long_position_ids: parse_position_ids(row.try_get("long_position_ids")?),
+                    short_position_ids: parse_position_ids(row.try_get("short_position_ids")?),
                 })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+            })
+            .collect::<Result<Vec<_>, TradingError>>()?;
 
         Ok(strategies)
     }
 
     /// Update strategy status and related fields
-    pub fn update_strategy_status(
+    pub async fn update_strategy_status(
         &self,
         id: &str,
         status: StrategyStatus,
@@ -224,57 +242,57 @@ impl StrategyStorage {
     ) -> Result<(), TradingError> {
         let updated_at = Utc::now();
 
-        self.conn.execute(
-            "UPDATE strategies 
-             SET status = ?1, closed_at = ?2, realized_pnl = ?3, updated_at = ?4
-             WHERE id = ?5",
-            params![
-                status.to_string(),
-                closed_at.map(|dt| dt.to_rfc3339()),
-                realized_pnl.map(|pnl| pnl.to_string()),
-                updated_at.to_rfc3339(),
-                id,
-            ],
-        )?;
+        sqlx::query(
+            r#"
+            UPDATE strategies 
+            SET status = $1, closed_at = $2, realized_pnl = $3, updated_at = $4
+            WHERE id = $5
+            "#,
+        )
+        .bind(status.to_string())
+        .bind(closed_at)
+        .bind(realized_pnl.map(|pnl| pnl.to_string()))
+        .bind(updated_at)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }
 
     /// Get all strategies
-    pub fn get_all_strategies(&self) -> Result<Vec<StrategyMetadata>, TradingError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, token_symbol, longs_size, shorts_size, status, opened_at, updated_at, close_at, closed_at, realized_pnl, long_position_ids, short_position_ids
-             FROM strategies ORDER BY opened_at DESC",
-        )?;
+    pub async fn get_all_strategies(&self) -> Result<Vec<StrategyMetadata>, TradingError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, token_symbol, longs_size, shorts_size, status, opened_at, updated_at, 
+                   close_at, closed_at, realized_pnl, long_position_ids, short_position_ids
+            FROM strategies ORDER BY opened_at DESC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
-        let strategies = stmt
-            .query_map([], |row| {
+        let strategies = rows
+            .iter()
+            .map(|row| {
                 Ok(StrategyMetadata {
-                    id: row.get(0)?,
-                    token_symbol: row.get(1)?,
-                    longs_size: Decimal::from_str(&row.get::<_, String>(2)?).unwrap(),
-                    shorts_size: Decimal::from_str(&row.get::<_, String>(3)?).unwrap(),
-                    status: StrategyStatus::from_str(&row.get::<_, String>(4)?).unwrap(),
-                    opened_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(5)?)
-                        .unwrap()
-                        .with_timezone(&Utc),
-                    updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
-                        .unwrap()
-                        .with_timezone(&Utc),
-                    close_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
-                        .unwrap()
-                        .with_timezone(&Utc),
-                    closed_at: row
-                        .get::<_, Option<String>>(8)?
-                        .map(|s| DateTime::parse_from_rfc3339(&s).unwrap().with_timezone(&Utc)),
+                    id: row.try_get("id")?,
+                    token_symbol: row.try_get("token_symbol")?,
+                    longs_size: Decimal::from_str(row.try_get("longs_size")?).unwrap(),
+                    shorts_size: Decimal::from_str(row.try_get("shorts_size")?).unwrap(),
+                    status: StrategyStatus::from_str(row.try_get("status")?).unwrap(),
+                    opened_at: row.try_get("opened_at")?,
+                    updated_at: row.try_get("updated_at")?,
+                    close_at: row.try_get("close_at")?,
+                    closed_at: row.try_get("closed_at")?,
                     realized_pnl: row
-                        .get::<_, Option<String>>(9)?
+                        .try_get::<Option<String>, _>("realized_pnl")?
                         .and_then(|s| Decimal::from_str(&s).ok()),
-                    long_position_ids: parse_position_ids(&row.get::<_, String>(10)?),
-                    short_position_ids: parse_position_ids(&row.get::<_, String>(11)?),
+                    long_position_ids: parse_position_ids(row.try_get("long_position_ids")?),
+                    short_position_ids: parse_position_ids(row.try_get("short_position_ids")?),
                 })
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
+            })
+            .collect::<Result<Vec<_>, TradingError>>()?;
 
         Ok(strategies)
     }
@@ -321,4 +339,3 @@ fn parse_position_ids(ids_str: &str) -> Vec<String> {
         ids_str.split(',').map(|s| s.to_string()).collect()
     }
 }
-

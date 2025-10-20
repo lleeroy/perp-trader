@@ -64,7 +64,7 @@ pub enum TradingError {
     RequestError(#[from] RequestError),
 
     #[error("Storage error: {0}")]
-    StorageError(#[from] rusqlite::Error),
+    StorageError(#[from] sqlx::Error),
 
     #[error("Internal error: {0}")]
     InternalError(#[from] anyhow::Error),

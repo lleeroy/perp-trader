@@ -9,6 +9,7 @@ use crate::{
 use chrono::Utc;
 use std::collections::HashMap;
 use tokio::time::{interval, Duration};
+use sqlx::PgPool;
 
 
 
@@ -21,25 +22,27 @@ pub struct StrategyMonitor {
 
 impl StrategyMonitor {
     /// Create a new strategy monitor
-    pub fn new(
-        position_storage: PositionStorage,
-        strategy_storage: StrategyStorage,
+    pub async fn new(
+        pool: PgPool,
         wallets: Vec<Wallet>,
-    ) -> Self {
+    ) -> Result<Self, TradingError> {
+        let position_storage = PositionStorage::new(pool.clone()).await?;
+        let strategy_storage = StrategyStorage::new(pool).await?;
+        
         let wallets_map = wallets.into_iter()
             .map(|w| (w.id, w))
             .collect();
         
-        Self {
+        Ok(Self {
             position_storage,
             strategy_storage,
             wallets: wallets_map,
-        }
+        })
     }
 
     /// Check all active strategies and close those that should be closed
     pub async fn check_and_close_strategies(&self) -> Result<(), TradingError> {
-        let strategies_to_close = self.strategy_storage.get_strategies_to_close()?;
+        let strategies_to_close = self.strategy_storage.get_strategies_to_close().await?;
         
         if strategies_to_close.is_empty() {
             return Ok(());
@@ -60,7 +63,7 @@ impl StrategyMonitor {
                         StrategyStatus::Failed,
                         None,
                         None,
-                    )?;
+                    ).await?;
                 }
             }
         }
@@ -78,7 +81,7 @@ impl StrategyMonitor {
             StrategyStatus::Closing,
             None,
             None,
-        )?;
+        ).await?;
 
         let all_position_ids = strategy_meta.get_all_position_ids();
         let mut closed_positions = Vec::new();
@@ -86,7 +89,7 @@ impl StrategyMonitor {
 
         // Close each position
         for position_id in all_position_ids {
-            let position = self.position_storage.get_position(&position_id)?;
+            let position = self.position_storage.get_position(&position_id).await?;
             
             if let Some(mut pos) = position {
                 // Find the wallet for this position
@@ -104,7 +107,7 @@ impl StrategyMonitor {
                             PositionStatus::Closed,
                             Some(Utc::now()),
                             Some(realized_pnl),
-                        )?;
+                        ).await?;
                         closed_positions.push((pos.id.clone(), realized_pnl));
                         info!("  ✓ Closed position {} | PnL: {:.2}", pos.id, realized_pnl);
                     }
@@ -117,7 +120,7 @@ impl StrategyMonitor {
                             PositionStatus::Failed,
                             Some(Utc::now()),
                             None,
-                        )?;
+                        ).await?;
                     }
                 }
             }
@@ -141,7 +144,7 @@ impl StrategyMonitor {
             final_status,
             Some(Utc::now()),
             Some(total_pnl),
-        )?;
+        ).await?;
 
         info!(
             "💰 Strategy {} final PnL: {:.2} USDC ({})",
@@ -189,8 +192,8 @@ impl StrategyMonitor {
     }
 
     /// Get summary of all active strategies
-    pub fn get_active_strategies_summary(&self) -> Result<Vec<StrategyMetadata>, TradingError> {
-        self.strategy_storage.get_active_strategies()
+    pub async fn get_active_strategies_summary(&self) -> Result<Vec<StrategyMetadata>, TradingError> {
+        self.strategy_storage.get_active_strategies().await
     }
 }
 
