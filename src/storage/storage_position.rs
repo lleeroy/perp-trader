@@ -27,6 +27,7 @@ impl PositionStorage {
             r#"
             CREATE TABLE IF NOT EXISTS positions (
                 id TEXT PRIMARY KEY,
+                wallet_id SMALLINT NOT NULL,
                 strategy_id TEXT,
                 exchange TEXT NOT NULL,
                 symbol TEXT NOT NULL,
@@ -71,9 +72,10 @@ impl PositionStorage {
         sqlx::query(
             r#"
             INSERT INTO positions 
-            (id, strategy_id, exchange, symbol, side, size, status, opened_at, close_at, closed_at, realized_pnl, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            (id, wallet_id, strategy_id, exchange, symbol, side, size, status, opened_at, close_at, closed_at, realized_pnl, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
             ON CONFLICT (id) DO UPDATE SET
+                wallet_id = EXCLUDED.wallet_id,
                 strategy_id = EXCLUDED.strategy_id,
                 exchange = EXCLUDED.exchange,
                 symbol = EXCLUDED.symbol,
@@ -88,6 +90,7 @@ impl PositionStorage {
             "#,
         )
         .bind(&position.id)
+        .bind(position.wallet_id as i16)
         .bind(&position.strategy_id)
         .bind(position.exchange.to_string())
         .bind(&position.symbol)
@@ -109,7 +112,7 @@ impl PositionStorage {
     pub async fn get_position(&self, id: &str) -> Result<Option<Position>, TradingError> {
         let row = sqlx::query(
             r#"
-            SELECT id, strategy_id, exchange, symbol, side, size, status, 
+            SELECT id, wallet_id, strategy_id, exchange, symbol, side, size, status, 
                    opened_at, close_at, closed_at, realized_pnl, updated_at
             FROM positions WHERE id = $1
             "#,
@@ -120,6 +123,7 @@ impl PositionStorage {
 
         match row {
             Some(row) => Ok(Some(Position {
+                wallet_id: row.try_get::<i16, _>("wallet_id")? as u8,
                 id: row.try_get("id")?,
                 strategy_id: row.try_get("strategy_id")?,
                 exchange: Exchange::from_str(row.try_get("exchange")?).unwrap(),
@@ -143,7 +147,7 @@ impl PositionStorage {
     pub async fn get_all_positions(&self) -> Result<Vec<Position>, TradingError> {
         let rows = sqlx::query(
             r#"
-            SELECT id, strategy_id, exchange, symbol, side, size, status, 
+            SELECT id, wallet_id, strategy_id, exchange, symbol, side, size, status, 
                    opened_at, close_at, closed_at, realized_pnl, updated_at
             FROM positions ORDER BY opened_at DESC
             "#,
@@ -155,6 +159,7 @@ impl PositionStorage {
             .iter()
             .map(|row| {
                 Ok(Position {
+                    wallet_id: row.try_get::<i16, _>("wallet_id")? as u8,
                     id: row.try_get("id")?,
                     strategy_id: row.try_get("strategy_id")?,
                     exchange: Exchange::from_str(row.try_get("exchange")?).unwrap(),
@@ -183,7 +188,7 @@ impl PositionStorage {
     ) -> Result<Vec<Position>, TradingError> {
         let rows = sqlx::query(
             r#"
-            SELECT id, strategy_id, exchange, symbol, side, size, status, 
+            SELECT id, wallet_id, strategy_id, exchange, symbol, side, size, status, 
                    opened_at, close_at, closed_at, realized_pnl, updated_at
             FROM positions WHERE exchange = $1 ORDER BY opened_at DESC
             "#,
@@ -196,6 +201,7 @@ impl PositionStorage {
             .iter()
             .map(|row| {
                 Ok(Position {
+                    wallet_id: row.try_get::<i16, _>("wallet_id")? as u8,
                     id: row.try_get("id")?,
                     strategy_id: row.try_get("strategy_id")?,
                     exchange: Exchange::from_str(row.try_get("exchange")?).unwrap(),
@@ -221,7 +227,7 @@ impl PositionStorage {
     pub async fn get_active_positions(&self) -> Result<Vec<Position>, TradingError> {
         let rows = sqlx::query(
             r#"
-            SELECT id, strategy_id, exchange, symbol, side, size, status, 
+            SELECT id, wallet_id, strategy_id, exchange, symbol, side, size, status, 
                    opened_at, close_at, closed_at, realized_pnl, updated_at
             FROM positions WHERE status IN ('OPEN', 'CLOSING') ORDER BY opened_at DESC
             "#,
@@ -233,6 +239,7 @@ impl PositionStorage {
             .iter()
             .map(|row| {
                 Ok(Position {
+                    wallet_id: row.try_get::<i16, _>("wallet_id")? as u8,
                     id: row.try_get("id")?,
                     strategy_id: row.try_get("strategy_id")?,
                     exchange: Exchange::from_str(row.try_get("exchange")?).unwrap(),

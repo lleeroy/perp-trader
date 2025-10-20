@@ -5,7 +5,38 @@ use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::trader::wallet::Wallet;
 use super::exchange::Exchange;
+
+/// Individual position on a single exchange
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Position {
+    pub wallet_id: u8,
+    /// Unique identifier for this position
+    pub id: String,
+    /// Strategy ID this position belongs to (if any)
+    pub strategy_id: Option<String>,
+    pub exchange: Exchange,
+    /// Trading pair symbol (e.g., "BTC-PERP")
+    pub symbol: String,
+    /// Position side (Long or Short)
+    pub side: PositionSide,
+    /// Position size (in base currency)
+    pub size: Decimal,
+    /// Current position status
+    pub status: PositionStatus,
+    /// When the position was opened
+    pub opened_at: DateTime<Utc>,
+    /// When the position should be closed
+    pub close_at: DateTime<Utc>,
+    /// When the position was actually closed
+    pub closed_at: Option<DateTime<Utc>>,
+    /// Realized PnL when closed
+    pub realized_pnl: Option<Decimal>,
+    /// Last updated timestamp
+    pub updated_at: DateTime<Utc>,
+}
+
 
 /// Position side (Long or Short)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,32 +102,4 @@ impl std::str::FromStr for PositionStatus {
             _ => Err(format!("Invalid PositionStatus: {}", s)),
         }
     }
-}
-
-/// Individual position on a single exchange
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Position {
-    /// Unique identifier for this position
-    pub id: String,
-    /// Strategy ID this position belongs to (if any)
-    pub strategy_id: Option<String>,
-    pub exchange: Exchange,
-    /// Trading pair symbol (e.g., "BTC-PERP")
-    pub symbol: String,
-    /// Position side (Long or Short)
-    pub side: PositionSide,
-    /// Position size (in base currency)
-    pub size: Decimal,
-    /// Current position status
-    pub status: PositionStatus,
-    /// When the position was opened
-    pub opened_at: DateTime<Utc>,
-    /// When the position should be closed
-    pub close_at: DateTime<Utc>,
-    /// When the position was actually closed
-    pub closed_at: Option<DateTime<Utc>>,
-    /// Realized PnL when closed
-    pub realized_pnl: Option<Decimal>,
-    /// Last updated timestamp
-    pub updated_at: DateTime<Utc>,
 }

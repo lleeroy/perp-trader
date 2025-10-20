@@ -176,8 +176,9 @@ impl PerpExchange for BackpackClient {
                     self.wallet.id, side, token.symbol, size, market_order.executed_quote_quantity);
                 
                 Ok(Position {
+                    wallet_id: self.wallet.id,
                     id: market_order.id.clone(),
-                    strategy_id: None, // Will be set by the strategy when saved
+                    strategy_id: None,
                     exchange: Exchange::Backpack,
                     symbol: token.symbol,
                     side,

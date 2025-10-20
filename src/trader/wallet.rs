@@ -1,9 +1,9 @@
 use std::{fs::File, io::BufReader};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use anyhow::{Result};
 
 /// Wallet struct containing API secrets for authentication with exchanges
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(unused)]
 pub struct Wallet {
     pub id: u8,
