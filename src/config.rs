@@ -20,6 +20,8 @@ pub struct DatabaseConfig {
     /// Maximum number of connections in the pool
     #[serde(default = "default_max_connections")]
     pub max_connections: u32,
+    /// Password for the database
+    pub password: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

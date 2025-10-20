@@ -8,6 +8,7 @@ mod perp;
 mod request;
 mod trader;
 mod storage;
+mod helpers;
 
 use anyhow::{Context, Result};
 use crate::config::AppConfig;

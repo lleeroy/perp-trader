@@ -7,6 +7,7 @@ use std::str::FromStr;
 pub enum Exchange {
     Backpack,
     Hibachi,
+    Lighter,
 }
 
 impl fmt::Display for Exchange {
@@ -14,6 +15,7 @@ impl fmt::Display for Exchange {
         match self {
             Exchange::Backpack => write!(f, "Backpack"),
             Exchange::Hibachi => write!(f, "Hibachi"),
+            Exchange::Lighter => write!(f, "Lighter"),
         }
     }
 }
@@ -25,6 +27,7 @@ impl FromStr for Exchange {
         match s.to_lowercase().as_str() {
             "backpack" => Ok(Exchange::Backpack),
             "hibachi" => Ok(Exchange::Hibachi),
+            "lighter" => Ok(Exchange::Lighter),
             _ => Err(anyhow::anyhow!("Unknown exchange: {}", s)),
         }
     }
