@@ -10,6 +10,7 @@ pub struct Balance {
 }
 
 impl Balance {
+    #[allow(unused)]
     pub fn total(&self) -> Decimal {
         self.free + self.locked
     }

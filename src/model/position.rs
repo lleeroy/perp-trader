@@ -78,6 +78,8 @@ impl std::str::FromStr for PositionStatus {
 pub struct Position {
     /// Unique identifier for this position
     pub id: String,
+    /// Strategy ID this position belongs to (if any)
+    pub strategy_id: Option<String>,
     pub exchange: Exchange,
     /// Trading pair symbol (e.g., "BTC-PERP")
     pub symbol: String,

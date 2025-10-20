@@ -1,3 +1,4 @@
+#![allow(unused)]
 use std::sync::LazyLock;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

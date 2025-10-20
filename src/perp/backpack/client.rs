@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use async_trait::async_trait;
 use bpx_api_client::types::order::{ExecuteOrderPayload, Order, OrderType, Side};
 use chrono::{DateTime, Duration};
@@ -48,7 +50,17 @@ impl BackpackClient {
         self.client.get_account().await.is_ok()
     }
 
-
+    /// Builds the payload for the execute order request.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - The token to trade.
+    /// * `side` - The side of the position to open.
+    /// * `amount_usdc` - The amount of USDC to trade.
+    ///
+    /// # Returns
+    ///
+    /// * `ExecuteOrderPayload` - The payload for the execute order request.
     fn build_payload(&self, 
         token: &Token, 
         side: PositionSide, 
@@ -165,6 +177,7 @@ impl PerpExchange for BackpackClient {
                 
                 Ok(Position {
                     id: market_order.id.clone(),
+                    strategy_id: None, // Will be set by the strategy when saved
                     exchange: Exchange::Backpack,
                     symbol: token.symbol,
                     side,

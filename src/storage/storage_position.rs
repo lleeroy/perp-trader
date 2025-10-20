@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use crate::error::TradingError;
 use crate::model::exchange::Exchange;
 use crate::model::position::{Position, PositionSide, PositionStatus};
@@ -26,6 +28,7 @@ impl PositionStorage {
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS positions (
                 id TEXT PRIMARY KEY,
+                strategy_id TEXT,
                 exchange TEXT NOT NULL,
                 symbol TEXT NOT NULL,
                 side TEXT NOT NULL,
@@ -47,6 +50,12 @@ impl PositionStorage {
             [],
         )?;
 
+        self.conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_strategy_id 
+             ON positions(strategy_id)",
+            [],
+        )?;
+
         Ok(())
     }
 
@@ -54,10 +63,11 @@ impl PositionStorage {
     pub fn save_position(&self, position: &Position) -> Result<(), TradingError> {
         self.conn.execute(
             "INSERT OR REPLACE INTO positions 
-             (id, exchange, symbol, side, size, status, opened_at, close_at, closed_at, realized_pnl, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+             (id, strategy_id, exchange, symbol, side, size, status, opened_at, close_at, closed_at, realized_pnl, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 position.id,
+                position.strategy_id,
                 position.exchange.to_string(),
                 position.symbol,
                 position.side.to_string(),
@@ -78,30 +88,31 @@ impl PositionStorage {
         let position = self
             .conn
             .query_row(
-                "SELECT id, exchange, symbol, side, size, status, opened_at, close_at, closed_at, realized_pnl, updated_at
+                "SELECT id, strategy_id, exchange, symbol, side, size, status, opened_at, close_at, closed_at, realized_pnl, updated_at
                  FROM positions WHERE id = ?1",
                 params![id],
                 |row| {
                     Ok(Position {
                         id: row.get(0)?,
-                        exchange: Exchange::from_str(&row.get::<_, String>(1)?).unwrap(),
-                        symbol: row.get(2)?,
-                        side: PositionSide::from_str(&row.get::<_, String>(3)?).unwrap(),
-                        size: Decimal::from_str(&row.get::<_, String>(4)?).unwrap(),
-                        status: PositionStatus::from_str(&row.get::<_, String>(5)?).unwrap(),
-                        opened_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
+                        strategy_id: row.get(1)?,
+                        exchange: Exchange::from_str(&row.get::<_, String>(2)?).unwrap(),
+                        symbol: row.get(3)?,
+                        side: PositionSide::from_str(&row.get::<_, String>(4)?).unwrap(),
+                        size: Decimal::from_str(&row.get::<_, String>(5)?).unwrap(),
+                        status: PositionStatus::from_str(&row.get::<_, String>(6)?).unwrap(),
+                        opened_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
                             .unwrap()
                             .with_timezone(&Utc),
-                        close_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
+                        close_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(8)?)
                             .unwrap()
                             .with_timezone(&Utc),
                         closed_at: row
-                            .get::<_, Option<String>>(8)?
+                            .get::<_, Option<String>>(9)?
                             .map(|s| DateTime::parse_from_rfc3339(&s).unwrap().with_timezone(&Utc)),
                         realized_pnl: row
-                            .get::<_, Option<String>>(9)?
+                            .get::<_, Option<String>>(10)?
                             .and_then(|s| Decimal::from_str(&s).ok()),
-                        updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(10)?)
+                        updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(11)?)
                             .unwrap()
                             .with_timezone(&Utc),
                     })
@@ -115,7 +126,7 @@ impl PositionStorage {
     /// Get all positions
     pub fn get_all_positions(&self) -> Result<Vec<Position>, TradingError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, exchange, symbol, side, size, status, opened_at, close_at, closed_at, realized_pnl, updated_at
+            "SELECT id, strategy_id, exchange, symbol, side, size, status, opened_at, close_at, closed_at, realized_pnl, updated_at
              FROM positions ORDER BY opened_at DESC",
         )?;
 
@@ -123,24 +134,25 @@ impl PositionStorage {
             .query_map([], |row| {
                 Ok(Position {
                     id: row.get(0)?,
-                    exchange: Exchange::from_str(&row.get::<_, String>(1)?).unwrap(),
-                    symbol: row.get(2)?,
-                    side: PositionSide::from_str(&row.get::<_, String>(3)?).unwrap(),
-                    size: Decimal::from_str(&row.get::<_, String>(4)?).unwrap(),
-                    status: PositionStatus::from_str(&row.get::<_, String>(5)?).unwrap(),
-                    opened_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
+                    strategy_id: row.get(1)?,
+                    exchange: Exchange::from_str(&row.get::<_, String>(2)?).unwrap(),
+                    symbol: row.get(3)?,
+                    side: PositionSide::from_str(&row.get::<_, String>(4)?).unwrap(),
+                    size: Decimal::from_str(&row.get::<_, String>(5)?).unwrap(),
+                    status: PositionStatus::from_str(&row.get::<_, String>(6)?).unwrap(),
+                    opened_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
                         .unwrap()
                         .with_timezone(&Utc),
-                    close_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
+                    close_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(8)?)
                         .unwrap()
                         .with_timezone(&Utc),
                     closed_at: row
-                        .get::<_, Option<String>>(8)?
+                        .get::<_, Option<String>>(9)?
                         .map(|s| DateTime::parse_from_rfc3339(&s).unwrap().with_timezone(&Utc)),
                     realized_pnl: row
-                        .get::<_, Option<String>>(9)?
+                        .get::<_, Option<String>>(10)?
                         .and_then(|s| Decimal::from_str(&s).ok()),
-                    updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(10)?)
+                    updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(11)?)
                         .unwrap()
                         .with_timezone(&Utc),
                 })
@@ -153,7 +165,7 @@ impl PositionStorage {
     /// Get positions by exchange
     pub fn get_positions_by_exchange(&self, exchange: Exchange) -> Result<Vec<Position>, TradingError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, exchange, symbol, side, size, status, opened_at, close_at, closed_at, realized_pnl, updated_at
+            "SELECT id, strategy_id, exchange, symbol, side, size, status, opened_at, close_at, closed_at, realized_pnl, updated_at
              FROM positions WHERE exchange = ?1 ORDER BY opened_at DESC",
         )?;
 
@@ -161,24 +173,25 @@ impl PositionStorage {
             .query_map(params![exchange.to_string()], |row| {
                 Ok(Position {
                     id: row.get(0)?,
-                    exchange: Exchange::from_str(&row.get::<_, String>(1)?).unwrap(),
-                    symbol: row.get(2)?,
-                    side: PositionSide::from_str(&row.get::<_, String>(3)?).unwrap(),
-                    size: Decimal::from_str(&row.get::<_, String>(4)?).unwrap(),
-                    status: PositionStatus::from_str(&row.get::<_, String>(5)?).unwrap(),
-                    opened_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
+                    strategy_id: row.get(1)?,
+                    exchange: Exchange::from_str(&row.get::<_, String>(2)?).unwrap(),
+                    symbol: row.get(3)?,
+                    side: PositionSide::from_str(&row.get::<_, String>(4)?).unwrap(),
+                    size: Decimal::from_str(&row.get::<_, String>(5)?).unwrap(),
+                    status: PositionStatus::from_str(&row.get::<_, String>(6)?).unwrap(),
+                    opened_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
                         .unwrap()
                         .with_timezone(&Utc),
-                    close_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
+                    close_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(8)?)
                         .unwrap()
                         .with_timezone(&Utc),
                     closed_at: row
-                        .get::<_, Option<String>>(8)?
+                        .get::<_, Option<String>>(9)?
                         .map(|s| DateTime::parse_from_rfc3339(&s).unwrap().with_timezone(&Utc)),
                     realized_pnl: row
-                        .get::<_, Option<String>>(9)?
+                        .get::<_, Option<String>>(10)?
                         .and_then(|s| Decimal::from_str(&s).ok()),
-                    updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(10)?)
+                    updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(11)?)
                         .unwrap()
                         .with_timezone(&Utc),
                 })
@@ -191,7 +204,7 @@ impl PositionStorage {
     /// Get active positions (Open or Closing status)
     pub fn get_active_positions(&self) -> Result<Vec<Position>, TradingError> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, exchange, symbol, side, size, status, opened_at, close_at, closed_at, realized_pnl, updated_at
+            "SELECT id, strategy_id, exchange, symbol, side, size, status, opened_at, close_at, closed_at, realized_pnl, updated_at
              FROM positions WHERE status IN ('OPEN', 'CLOSING') ORDER BY opened_at DESC",
         )?;
 
@@ -199,24 +212,25 @@ impl PositionStorage {
             .query_map([], |row| {
                 Ok(Position {
                     id: row.get(0)?,
-                    exchange: Exchange::from_str(&row.get::<_, String>(1)?).unwrap(),
-                    symbol: row.get(2)?,
-                    side: PositionSide::from_str(&row.get::<_, String>(3)?).unwrap(),
-                    size: Decimal::from_str(&row.get::<_, String>(4)?).unwrap(),
-                    status: PositionStatus::from_str(&row.get::<_, String>(5)?).unwrap(),
-                    opened_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(6)?)
+                    strategy_id: row.get(1)?,
+                    exchange: Exchange::from_str(&row.get::<_, String>(2)?).unwrap(),
+                    symbol: row.get(3)?,
+                    side: PositionSide::from_str(&row.get::<_, String>(4)?).unwrap(),
+                    size: Decimal::from_str(&row.get::<_, String>(5)?).unwrap(),
+                    status: PositionStatus::from_str(&row.get::<_, String>(6)?).unwrap(),
+                    opened_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
                         .unwrap()
                         .with_timezone(&Utc),
-                    close_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(7)?)
+                    close_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(8)?)
                         .unwrap()
                         .with_timezone(&Utc),
                     closed_at: row
-                        .get::<_, Option<String>>(8)?
+                        .get::<_, Option<String>>(9)?
                         .map(|s| DateTime::parse_from_rfc3339(&s).unwrap().with_timezone(&Utc)),
                     realized_pnl: row
-                        .get::<_, Option<String>>(9)?
+                        .get::<_, Option<String>>(10)?
                         .and_then(|s| Decimal::from_str(&s).ok()),
-                    updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(10)?)
+                    updated_at: DateTime::parse_from_rfc3339(&row.get::<_, String>(11)?)
                         .unwrap()
                         .with_timezone(&Utc),
                 })
@@ -273,6 +287,7 @@ mod tests {
         // Create a test position
         let position = Position {
             id: "test-123".to_string(),
+            strategy_id: Some("strategy-abc".to_string()),
             exchange: Exchange::Backpack,
             symbol: "SOL-PERP".to_string(),
             side: PositionSide::Long,
