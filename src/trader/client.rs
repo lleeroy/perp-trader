@@ -3,14 +3,14 @@ use crate::{
     error::TradingError,
     model::{
 		position::{Position, PositionStatus},
-		token::Token,
+		token::Token, Exchange,
 	},
 	perp::{backpack::BackpackClient, PerpExchange},
 	storage::{
 		storage_position::PositionStorage,
 		storage_strategy::{StrategyMetadata, StrategyStorage},
 	},
-	trader::{strategy::{TradingStrategy, StrategyStatus}, wallet::Wallet},
+	trader::{strategy::{StrategyStatus, TradingStrategy}, wallet::Wallet},
 };
 
 use chrono::{DateTime, Utc};
@@ -27,96 +27,6 @@ pub struct TraderClient {
 }
 
 impl TraderClient {
-	// ===== Small internal helpers to reduce duplication =====
-	async fn wait_until(&self, deadline: DateTime<Utc>) {
-		let now = Utc::now();
-		if deadline > now {
-			let wait = (deadline - now)
-				.to_std()
-				.unwrap_or(Duration::from_secs(0));
-			if wait.as_secs() > 0 {
-				sleep(wait).await;
-			}
-		}
-	}
-
-	fn find_wallet(&self, wallet_id: u8) -> Result<&Wallet, TradingError> {
-		self.wallets
-			.iter()
-			.find(|w| w.id == wallet_id)
-			.ok_or_else(|| TradingError::InvalidInput(format!("Wallet #{} not found", wallet_id)))
-	}
-
-	async fn mark_position_failed(&self, position_id: &str) -> Result<(), TradingError> {
-		self
-			.position_storage
-			.update_position_status(position_id, PositionStatus::Failed, Some(Utc::now()), None)
-			.await
-	}
-
-	async fn set_strategy_status(
-		&self,
-		strategy_id: &str,
-		status: StrategyStatus,
-		closed_at: Option<DateTime<Utc>>,
-		total_pnl: Option<Decimal>,
-	) -> Result<(), TradingError> {
-		self
-			.strategy_storage
-			.update_strategy_status(strategy_id, status, closed_at, total_pnl)
-			.await
-	}
-
-	fn sum_pnl(pairs: &[(String, Decimal)]) -> Decimal {
-		pairs.iter().map(|(_, pnl)| *pnl).sum()
-	}
-
-	async fn fetch_wallet_balances(&self) -> Result<Vec<(u8, Decimal)>, TradingError> {
-		let mut balances = Vec::with_capacity(self.wallets.len());
-		for wallet in &self.wallets {
-			let client = BackpackClient::new(wallet);
-			let balance = client.get_usdc_balance().await?;
-			if balance <= Decimal::ZERO {
-				return Err(TradingError::InvalidInput(format!(
-					"Wallet #{} has insufficient USDC balance: {}",
-					wallet.id, balance
-				)));
-			}
-			balances.push((wallet.id, balance));
-		}
-		Ok(balances)
-	}
-
-	fn select_random_token(&self) -> Result<Token, TradingError> {
-		let supported = Token::get_supported_tokens();
-		let mut rng = rand::thread_rng();
-		supported
-			.choose(&mut rng)
-			.cloned()
-			.ok_or_else(|| TradingError::InvalidInput("No tokens available".into()))
-	}
-
-	/// Checks for active strategies involving this client's wallets.
-	/// If conflicts are present, waits for them to close and returns an error instructing caller to retry.
-	async fn handle_conflicting_strategies(&self) -> Result<(), TradingError> {
-		let active_strategies = self.strategy_storage.get_active_strategies().await?;
-		let conflicting: Vec<StrategyMetadata> = active_strategies
-			.into_iter()
-			.filter(|strategy| strategy.wallet_ids.iter().any(|id| self.wallets.iter().any(|w| w.id == *id)))
-			.collect();
-
-		if !conflicting.is_empty() {
-			info!("⚠️  Found {} active strategies involving the provided wallets", conflicting.len());
-			info!("📋 Waiting for these strategies to complete before starting new trades...");
-			self.monitor_and_close_strategies(conflicting).await?;
-			return Err(TradingError::InvalidInput(
-				"Active strategies were completed. Please call the function again to create new trades.".into(),
-			));
-		}
-
-		Ok(())
-	}
-
     /// Create a new trader client with a database pool
     pub async fn new(wallet_ids: Vec<u8>, pool: PgPool) -> Result<Self, TradingError> {
 
@@ -141,6 +51,7 @@ impl TraderClient {
             strategy_storage,
         })
     }
+
 
     /// Monitor and close strategies when they reach their close_at time
     ///
@@ -299,14 +210,14 @@ impl TraderClient {
     pub async fn farm_points_on_backpack_from_multiple_wallets(
         &self,
     ) -> Result<TradingStrategy, TradingError> {
-        info!("🎯 Starting farming strategy with {} wallets", self.wallets.len());
+        info!("🎯 Starting Backpack farming strategy with {} wallets", self.wallets.len());
         
         // Handle conflicting strategies across our wallets (retry-after-close behavior)
         self.handle_conflicting_strategies().await?;
         info!("✅ No active strategies found for these wallets.");
 
 		// Step 1: Fetch USDC balances from all wallets
-		let wallet_balances = self.fetch_wallet_balances().await?;
+		let wallet_balances = self.fetch_wallet_balances_on_backpack().await?;
 		for (id, balance) in &wallet_balances {
 			info!("💰 Wallet #{}: {:.2} USDC", id, balance);
 		}
@@ -315,9 +226,8 @@ impl TraderClient {
         let allocations = TradingStrategy::generate_balanced_allocations(wallet_balances)?;
 
 		// Step 3: Randomly select a token to trade
-		let selected_token = self.select_random_token()?;
-        
-        info!("🎲 Selected token: {}", selected_token.symbol);
+		let selected_token = self.select_random_token(Exchange::Backpack)?;
+        info!("🎲 Selected token: {:?}", selected_token.symbol);
 
         // Step 4: Open positions for each allocation
         let mut long_positions = Vec::new();
@@ -326,7 +236,6 @@ impl TraderClient {
         for allocation in allocations {
 			// Find the wallet for this allocation
 			let wallet = self.find_wallet(allocation.wallet_id)?;
-            
             let client = BackpackClient::new(wallet);
             
             // Open position
@@ -347,7 +256,7 @@ impl TraderClient {
 
         // Step 5: Build the trading strategy
         let mut strategy = TradingStrategy::build_from_positions(
-            selected_token.symbol.clone(),
+            selected_token.get_symbol_string(Exchange::Backpack),
             long_positions, 
             short_positions
         )?;
@@ -375,14 +284,109 @@ impl TraderClient {
     pub async fn farm_points_on_lighter_from_multiple_wallets(
         &self,
     ) -> Result<TradingStrategy, TradingError> {
+        info!("🎯 Starting Lighter farming strategy with {} wallets", self.wallets.len());
         // Reuse the same conflict handling to ensure wallet safety
         self.handle_conflicting_strategies().await?;
+
+        
         // Not yet implemented; keep the explicit todo for future work
         todo!("Implement farm_points_on_lighter_from_multiple_wallets");
     }
 
+
+    // ===== Small internal helpers to reduce duplication =====
+	async fn wait_until(&self, deadline: DateTime<Utc>) {
+		let now = Utc::now();
+		if deadline > now {
+			let wait = (deadline - now)
+				.to_std()
+				.unwrap_or(Duration::from_secs(0));
+			if wait.as_secs() > 0 {
+				sleep(wait).await;
+			}
+		}
+	}
+
+	fn find_wallet(&self, wallet_id: u8) -> Result<&Wallet, TradingError> {
+		self.wallets
+			.iter()
+			.find(|w| w.id == wallet_id)
+			.ok_or_else(|| TradingError::InvalidInput(format!("Wallet #{} not found", wallet_id)))
+	}
+
+	async fn mark_position_failed(&self, position_id: &str) -> Result<(), TradingError> {
+		self
+			.position_storage
+			.update_position_status(position_id, PositionStatus::Failed, Some(Utc::now()), None)
+			.await
+	}
+
+	async fn set_strategy_status(
+		&self,
+		strategy_id: &str,
+		status: StrategyStatus,
+		closed_at: Option<DateTime<Utc>>,
+		total_pnl: Option<Decimal>,
+	) -> Result<(), TradingError> {
+		self
+			.strategy_storage
+			.update_strategy_status(strategy_id, status, closed_at, total_pnl)
+			.await
+	}
+
+	fn sum_pnl(pairs: &[(String, Decimal)]) -> Decimal {
+		pairs.iter().map(|(_, pnl)| *pnl).sum()
+	}
+
+	async fn fetch_wallet_balances_on_backpack(&self) -> Result<Vec<(u8, Decimal)>, TradingError> {
+		let mut balances = Vec::with_capacity(self.wallets.len());
+		for wallet in &self.wallets {
+			let client = BackpackClient::new(wallet);
+			let balance = client.get_usdc_balance().await?;
+			if balance <= Decimal::ZERO {
+				return Err(TradingError::InvalidInput(format!(
+					"Wallet #{} has insufficient USDC balance: {}",
+					wallet.id, balance
+				)));
+			}
+			balances.push((wallet.id, balance));
+		}
+		Ok(balances)
+	}
+
+	fn select_random_token(&self, exchange: Exchange) -> Result<Token, TradingError> {
+		let supported = Token::get_supported_tokens();
+		let mut rng = rand::thread_rng();
+		supported
+			.choose(&mut rng)
+			.cloned()
+			.ok_or_else(|| TradingError::InvalidInput("No tokens available".into()))
+	}
+
+	/// Checks for active strategies involving this client's wallets.
+	/// If conflicts are present, waits for them to close and returns an error instructing caller to retry.
+	async fn handle_conflicting_strategies(&self) -> Result<(), TradingError> {
+		let active_strategies = self.strategy_storage.get_active_strategies().await?;
+		let conflicting: Vec<StrategyMetadata> = active_strategies
+			.into_iter()
+			.filter(|strategy| strategy.wallet_ids.iter().any(|id| self.wallets.iter().any(|w| w.id == *id)))
+			.collect();
+
+		if !conflicting.is_empty() {
+			info!("⚠️  Found {} active strategies involving the provided wallets", conflicting.len());
+			info!("📋 Waiting for these strategies to complete before starting new trades...");
+			self.monitor_and_close_strategies(conflicting).await?;
+			return Err(TradingError::InvalidInput(
+				"Active strategies were completed. Please call the function again to create new trades.".into(),
+			));
+		}
+
+		Ok(())
+	}
+
+
     #[allow(unused)]
-    pub fn get_supported_tokens(&self) -> Vec<Token> {
+    pub fn get_supported_tokens(&self, exchange: Exchange) -> Vec<Token> {
         Token::get_supported_tokens()
     }
 

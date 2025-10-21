@@ -72,7 +72,7 @@ impl Request {
         method: Method,
         url: S,
         headers: Option<HeaderMap>,
-        body: Option<Value>,
+        body: Option<String>,
         proxy_url: Option<S>,
     ) -> Result<Value, RequestError> {
         let attempts_limit = 5;  // Quick retry: 1 retry for fast failure
@@ -97,7 +97,7 @@ impl Request {
                     .headers(headers.clone()),
                 Method::POST => client
                     .request(method.clone(), url.clone())
-                    .json(&body)
+                    .body(body.as_ref().unwrap().clone())
                     .headers(headers.clone()),
                 _ => return Err(RequestError::MethodNotSupported(format!("The method <{}> is not supported.", method))),
             };

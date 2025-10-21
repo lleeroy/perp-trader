@@ -10,8 +10,14 @@ mod trader;
 mod storage;
 mod helpers;
 
+use std::str::FromStr;
+
 use anyhow::{Context, Result};
+use rust_decimal::Decimal;
 use crate::config::AppConfig;
+use crate::model::token::Token;
+use crate::model::{Exchange, PositionSide};
+use crate::perp::PerpExchange;
 use crate::storage::init_pool;
 use crate::trader::client::TraderClient;
 
@@ -21,25 +27,11 @@ async fn main() -> Result<()> {
     pretty_env_logger::init();
     info!("🚀 Starting perp-trader application...");
 
-    // Load configuration
-    let config = AppConfig::load().context("Failed to load configuration")?;
-    info!("✅ Configuration loaded successfully");
+    let token = Token::btc();
+    let wallet = trader::wallet::Wallet::load_from_json(1).unwrap();
+    let lighter_client = perp::lighter::client::LighterClient::new(&wallet).await.unwrap();
 
-    // Initialize database connection pool
-    info!("🔌 Connecting to database: {}", config.database.url);
-    let pool = init_pool(&config).await.context("Failed to initialize database pool")?;
-    info!("✅ Database connection pool initialized");
 
-    // Initialize trader client
-    info!("🔌 Initializing exchange clients...");
-    let wallet_ids = vec![1, 2, 3];
-    let trader_client = TraderClient::new(wallet_ids, pool).await.context("Failed to create trader client")?;
-    info!("✅ Trader client initialized");
-
-    trader_client.farm_points_on_backpack_from_multiple_wallets().await?;
-
-    // Application ready
-    info!("✅ Application initialized successfully");
-    
+    lighter_client.open_position(token, PositionSide::Long, Decimal::ZERO).await.unwrap();
     Ok(())
 }

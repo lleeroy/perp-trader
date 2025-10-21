@@ -39,9 +39,6 @@ pub enum TradingError {
     #[error("Order execution failed: {0}")]
     OrderExecutionFailed(String),
 
-    #[error("Invalid leverage: {0}")]
-    InvalidLeverage(String),
-
     #[error("Position opening failed: {0}")]
     PositionOpeningFailed(String),
 
@@ -50,9 +47,6 @@ pub enum TradingError {
 
     #[error("Atomic operation failed: {0}")]
     AtomicOperationFailed(String),
-
-    #[error("Risk check failed: {0}")]
-    RiskCheckFailed(String),
 
     #[error("Market data unavailable: {0}")]
     MarketDataUnavailable(String),
@@ -66,6 +60,12 @@ pub enum TradingError {
     #[error("Storage error: {0}")]
     StorageError(#[from] sqlx::Error),
 
+    #[error("HTTP error: {0}")]
+    HttpError(#[from] reqwest::Error),
+
     #[error("Internal error: {0}")]
     InternalError(#[from] anyhow::Error),
+
+    #[error("Signing error: {0}")]
+    SigningError(String),
 }

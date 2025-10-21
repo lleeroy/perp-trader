@@ -67,7 +67,7 @@ impl BackpackClient {
         amount_usdc: Decimal,
     ) -> ExecuteOrderPayload {
         ExecuteOrderPayload {
-            symbol: token.symbol.clone(),
+            symbol: token.get_symbol_string(Exchange::Backpack),
             auto_lend: Some(true),
             auto_lend_redeem: Some(true),
             auto_borrow: Some(true),
@@ -149,7 +149,7 @@ impl PerpExchange for BackpackClient {
     ///
     /// * `Ok(Position)` containing the details of the opened position, or a `TradingError`.
     async fn open_position(&self, token: Token, side: PositionSide, amount_usdc: Decimal) -> Result<Position, TradingError> {
-        info!("#{} | <{}> opening position on {} with amount {:.2}USDC", self.wallet.id, side, token.symbol, amount_usdc);
+        info!("#{} | <{}> opening position on {:?} with amount {:.2}USDC", self.wallet.id, side, token.symbol, amount_usdc);
         let payload = self.build_payload(&token, side, amount_usdc);
 
         let order = self.client.execute_order(payload)
@@ -180,7 +180,7 @@ impl PerpExchange for BackpackClient {
                     id: market_order.id.clone(),
                     strategy_id: None,
                     exchange: Exchange::Backpack,
-                    symbol: token.symbol,
+                    symbol: token.get_symbol_string(Exchange::Backpack),
                     side,
                     size,
                     status: PositionStatus::Open,

@@ -69,10 +69,10 @@ pub fn encrypt_private_key(private_key_hex: &str, password: &str) -> Result<Stri
 	// 96-bit nonce for AES-GCM
 	let mut nonce_bytes = [0u8; 12];
 	rand_core::RngCore::fill_bytes(&mut OsRng, &mut nonce_bytes);
-	let nonce = Nonce::from_slice(&nonce_bytes);
+	let nonce = Nonce::from(nonce_bytes);
 
 	let ciphertext = cipher
-		.encrypt(nonce, private_key_bytes.as_slice())
+		.encrypt(&nonce, private_key_bytes.as_slice())
 		.map_err(|_| anyhow!("encryption failed"))?;
 
 	// zeroize sensitive in-memory data ASAP
@@ -127,7 +127,7 @@ pub fn decrypt_private_key(encoded: &str, password: &str) -> Result<String> {
 	let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| anyhow!("cipher init failed"))?;
 	let nonce = Nonce::from_slice(nonce_bytes);
 	let mut plaintext = cipher
-		.decrypt(nonce, ciphertext)
+		.decrypt(&nonce, ciphertext)
 		.map_err(|_| anyhow!("decryption failed (bad password or corrupted data)"))?;
 
 	if plaintext.len() != 32 {

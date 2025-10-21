@@ -10,12 +10,11 @@ use crate::{config::AppConfig, error::TradingError, helpers::encode};
 pub struct Wallet {
     pub id: u8,
     pub private_key: String,
+    pub address: String,
     pub backpack_api_key: String,
     pub backpack_api_secret: String,
-    pub hibachi_api_key: String,
-    pub hibachi_api_secret: String,
     pub lighter_api_key: String,
-    pub lighter_api_secret: String,
+    pub lighter_account_index: u32,
 }
 
 #[allow(unused)]
@@ -52,6 +51,15 @@ impl Wallet {
         let mut wallet: Wallet = serde_json::from_value(wallet_value.clone()).map_err(|e| TradingError::InvalidInput(e.to_string()))?;
         wallet.private_key = encode::decrypt_private_key(&wallet.private_key, &config.database.password).unwrap();
 
+        if wallet.address.is_empty() {
+            return Err(TradingError::InvalidInput("Address is empty".to_string()));
+        }
+
+        if wallet.private_key.is_empty() {
+            return Err(TradingError::InvalidInput("Private key is empty".to_string()));
+        }
+        
+        
         Ok(wallet)
     }
 }
