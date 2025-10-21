@@ -13,7 +13,11 @@ pub struct Wallet {
     pub address: String,
     pub backpack_api_key: String,
     pub backpack_api_secret: String,
+    #[serde(default)]
     pub lighter_api_key: String,
+    #[serde(default)]
+    pub lighter_api_public_key: String,
+    #[serde(default)]
     pub lighter_account_index: u32,
 }
 
@@ -49,7 +53,17 @@ impl Wallet {
 
         // Deserialize the found value to the Wallet struct
         let mut wallet: Wallet = serde_json::from_value(wallet_value.clone()).map_err(|e| TradingError::InvalidInput(e.to_string()))?;
+        
+        // Decrypt Ethereum private key
         wallet.private_key = encode::decrypt_private_key(&wallet.private_key, &config.database.password).unwrap();
+
+        // Strip "0x" prefix from Lighter API keys if present
+        if wallet.lighter_api_key.starts_with("0x") {
+            wallet.lighter_api_key = wallet.lighter_api_key[2..].to_string();
+        }
+        if wallet.lighter_api_public_key.starts_with("0x") {
+            wallet.lighter_api_public_key = wallet.lighter_api_public_key[2..].to_string();
+        }
 
         if wallet.address.is_empty() {
             return Err(TradingError::InvalidInput("Address is empty".to_string()));

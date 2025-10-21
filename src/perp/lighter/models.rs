@@ -1,9 +1,5 @@
-use base64::{engine::general_purpose, Engine};
 use chrono::Utc;
-use lighter_rust::{EthereumSigner, LighterError, Signer};
 use serde::{Deserialize, Serialize};
-
-use crate::error::TradingError;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LighterAccount {
@@ -68,27 +64,27 @@ pub struct LighterOrderInfo {
     #[serde(rename = "ApiKeyIndex")]
     pub api_key_index: u32,
     #[serde(rename = "MarketIndex")]
-    pub market_index: u32,
+    pub market_index: i32,
     #[serde(rename = "ClientOrderIndex")]
-    pub client_order_index: u64,
+    pub client_order_index: i64,
     #[serde(rename = "BaseAmount")]
-    pub base_amount: u64,
-    pub price: u64,
+    pub base_amount: i64,
+    pub price: i64,
     #[serde(rename = "IsAsk")]
-    pub is_ask: i32,
+    pub is_ask: bool,
     #[serde(rename = "Type")]
-    pub type_field: u32,
+    pub type_field: i32,
     #[serde(rename = "TimeInForce")]
     pub time_in_force: i32,
     #[serde(rename = "ReduceOnly")]
-    pub reduce_only: i32,
+    pub reduce_only: bool,
     #[serde(rename = "TriggerPrice")]
-    pub trigger_price: u64,
+    pub trigger_price: i64,
     #[serde(rename = "ExpiredAt")]
     pub expired_at: i64,
     #[serde(rename = "OrderExpiry")]
     pub order_expiry: i64,
-    pub nonce: u64,
+    pub nonce: i64,
     #[serde(rename = "Sig")]
     pub signature: String,
 }
@@ -96,24 +92,25 @@ pub struct LighterOrderInfo {
 impl LighterOrder {
     pub fn new(
         account_index: u32, 
-        base_amount: u64, 
-        price: u64, 
-        is_ask: i32, 
-        nonce: u64,
+        market_index: i32,
+        base_amount: i64, 
+        price: i64, 
+        is_ask: bool, 
+        nonce: i64,
     ) -> Self {
-        let expired_at = Utc::now().timestamp() + 60;
+        let expired_at = Utc::now().timestamp_millis() + 60000;
 
         Self {
             tx_info: LighterOrderInfo {
                 account_index,
+                market_index,
                 base_amount,
                 price,
                 is_ask,
                 client_order_index: 0,
-                market_index: 0,
                 type_field: 1,
                 time_in_force: 0,
-                reduce_only: 0,
+                reduce_only: false,
                 api_key_index: 0,
                 trigger_price: 0,
                 order_expiry: 0,
@@ -127,36 +124,3 @@ impl LighterOrder {
     }
 }
 
-
-impl LighterOrderInfo {
-    pub fn to_message(&self) -> String {
-        use serde_json::json;
-
-        let message = json!({
-            "AccountIndex": self.account_index,
-            "BaseAmount": self.base_amount,
-            "Price": self.price,
-            "Ask": self.is_ask,
-            "ClientOrderIndex": self.client_order_index,
-            "MarketIndex": self.market_index,
-            "Type": self.type_field,
-            "ApiKeyIndex": self.api_key_index,
-            "TimeInForce": self.time_in_force,
-            "ReduceOnly": self.reduce_only,
-            "TriggerPrice": self.trigger_price,
-            "ExpiredAt": self.expired_at,
-            "OrderExpiry": self.order_expiry,
-            "Nonce": self.nonce,
-        });
-
-        serde_json::to_string(&message).unwrap()
-    }
-
-    pub fn sign(&self, signer: &EthereumSigner) -> Result<String, TradingError> {
-        let message = self.to_message();
-        let sig_hex = signer.sign_message(&message).map_err(|e| TradingError::SigningError(e.to_string()))?;
-        let sig_bytes = hex::decode(sig_hex.trim_start_matches("0x")).map_err(|e| TradingError::SigningError(e.to_string()))?;
-        let sig_base64 = general_purpose::STANDARD.encode(&sig_bytes);
-        Ok(sig_base64)
-    }
-}

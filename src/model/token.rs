@@ -65,17 +65,17 @@ impl Token {
         }
     }
 
-    pub fn get_market_index(&self, exchange: Exchange) -> u32 {
+    pub fn get_market_index(&self, exchange: Exchange) -> i32 {
         match self.symbol {
             SupportedToken::BTC => match exchange {
-                Exchange::Lighter => 0,
-                Exchange::Hibachi => 0,
-                Exchange::Backpack => 0,
-            },
-            SupportedToken::ETH => match exchange {
                 Exchange::Lighter => 1,
                 Exchange::Hibachi => 1,
                 Exchange::Backpack => 1,
+            },
+            SupportedToken::ETH => match exchange {
+                Exchange::Lighter => 0,
+                Exchange::Hibachi => 0,
+                Exchange::Backpack => 0,
             },
             SupportedToken::SOL => match exchange {
                 Exchange::Lighter => 2,

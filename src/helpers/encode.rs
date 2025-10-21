@@ -1,4 +1,5 @@
 #![allow(unused)]
+#![allow(deprecated)]
 
 use anyhow::{anyhow, Result};
 use argon2::{Algorithm, Argon2, Params, Version};

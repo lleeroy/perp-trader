@@ -36,7 +36,8 @@ impl Request {
             .read_timeout(Duration::from_secs(10))     // Quick read timeout
             .pool_max_idle_per_host(200)  // Very high pool for massive concurrency (300+ tasks * multiple hosts)
             .pool_idle_timeout(Duration::from_secs(60))  // Longer idle timeout for connection reuse
-            .tcp_keepalive(Duration::from_secs(30));
+            .tcp_keepalive(Duration::from_secs(30))
+            .no_proxy();  // Disable system proxy detection to avoid macOS system-configuration issues
 
         if let Some(proxy) = proxy_url {
             let proxy = Proxy::all(proxy).map_err(|e| RequestError::ConnectionError(e.to_string()))?;
