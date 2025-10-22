@@ -1,14 +1,20 @@
+use std::time::Duration;
 use std::{fs::File, io::BufReader};
 use async_trait::async_trait;
 use chrono::Utc;
 use reqwest::{header::HeaderMap, Method};
 use rust_decimal::Decimal;
+use tokio::time::sleep;
 use urlencoding;
 use alloy::signers::{Signature, SignerSync};
 use alloy::signers::local::PrivateKeySigner;
 use alloy::primitives::eip191_hash_message;
+use crate::perp::lighter::models::LighterTx;
 use crate::{error::TradingError, model::{balance::Balance, token::Token, Exchange, Position, PositionSide}, perp::{lighter::{models::{LighterAccount, LighterOrder}, signer::SignerClient}, PerpExchange}, request::Request, trader::wallet::Wallet};
-use crate::perp::lighter::signer::TX_TYPE_CHANGE_PUB_KEY;
+use crate::perp::lighter::signer::{TX_TYPE_CHANGE_PUB_KEY, TX_TYPE_CREATE_ORDER, TX_TYPE_UPDATE_LEVERAGE};
+
+const DEFAULT_API_KEY_INDEX: i32 = 0;
+const DEFAULT_BASE_URL: &str = "https://mainnet.zklighter.elliot.ai/api/v1";
 
 #[allow(unused)]
 pub struct LighterClient {
@@ -31,63 +37,17 @@ impl LighterClient {
     ///
     /// * `LighterClient` - A client instance ready to communicate with the Lighter API.
     pub async fn new(wallet: &Wallet) -> Result<Self, TradingError> {
-        let base_url = "https://mainnet.zklighter.elliot.ai/api/v1".to_string();
-        let api_key_index = 0; // Default API key index
+        let base_url = DEFAULT_BASE_URL.to_string();     // Default base URL
+        let api_key_index = DEFAULT_API_KEY_INDEX;          // Default API key index
+        let account_index = Self::get_account_index(&base_url, wallet).await?;
 
-        // Get account index
-        let account_index = if wallet.lighter_account_index == 0 {
-            info!("#{} | Fetching account index from API...", wallet.id);
-            let index = Self::get_account_index(&base_url, wallet).await?;
-            Self::save_api_key_and_account_index(wallet, &wallet.lighter_api_key, index).await?;
-            index
-        } else {
-            wallet.lighter_account_index
-        };
-
-        // Get or generate API key
-        let (api_private_key, api_public_key) = if !wallet.lighter_api_key.is_empty() 
-            && !wallet.lighter_api_public_key.is_empty() {
-            // Use stored API keys
-            info!("#{} | Using stored Lighter API keys...", wallet.id);
-            (wallet.lighter_api_key.clone(), wallet.lighter_api_public_key.clone())
-        } else {
-            // Try to fetch existing API key from server
-            info!("#{} | No stored API key found. Checking server...", wallet.id);
-            
-            match Self::get_existing_api_key(&base_url, account_index).await {
-                Ok(public_key) => {
-                    info!("#{} | Found existing API key on server: {}", wallet.id, public_key);
-                    warn!("#{} | Private key not stored locally. Generating NEW API key to replace it...", wallet.id);
-                    
-                    // Generate and register a new key (this will replace the old one)
-                    let (priv_key, pub_key) = Self::register_new_api_key(
-                        &base_url, 
-                        wallet, 
-                        account_index, 
-                        api_key_index
-                    ).await?;
-                    
-                    // Save the new keys
-                    Self::save_api_keys(wallet, &priv_key, &pub_key, account_index).await?;
-                    (priv_key, pub_key)
-                }
-                Err(_) => {
-                    // No existing key, need to generate and register
-                    info!("#{} | No API key found on server. Generating new one...", wallet.id);
-                    let (priv_key, pub_key) = Self::register_new_api_key(
-                        &base_url, 
-                        wallet, 
-                        account_index, 
-                        api_key_index
-                    ).await?;
-                    
-                    // Save the new keys
-                    Self::save_api_keys(wallet, &priv_key, &pub_key, account_index).await?;
-                    (priv_key, pub_key)
-                }
-            }
-        };
-
+        let (api_private_key, api_public_key) = Self::register_new_api_key(
+            &base_url, 
+            wallet, 
+            account_index, 
+            api_key_index
+        ).await?;
+        
         // Create signer client with the API key
         let signer_client = SignerClient::new(
             &base_url,
@@ -170,6 +130,7 @@ impl LighterClient {
         // Step 2: Get the next nonce for this account
         let nonce_url = format!("{}/nextNonce?account_index={}&api_key_index={}", 
             base_url, account_index, api_key_index);
+            
         let nonce_response = Request::process_request(
             Method::GET, 
             nonce_url, 
@@ -204,9 +165,7 @@ impl LighterClient {
         // Step 5: Extract the message to sign with Ethereum wallet
         let message_to_sign = tx_info.message_to_sign
             .ok_or_else(|| TradingError::SigningError("No MessageToSign in response".to_string()))?;
-        
-        info!("#{} | Message to sign: {}", wallet.id, message_to_sign);
-        
+                
         // Step 6: Sign the message with Ethereum wallet
         let eth_signer = wallet.private_key.parse::<PrivateKeySigner>()
             .map_err(|e| TradingError::SigningError(format!("Invalid private key: {}", e)))?;
@@ -220,9 +179,7 @@ impl LighterClient {
         
         // Convert signature to hex string with 0x prefix
         let signature_hex = signature.to_string();
-        
-        info!("#{} | Ethereum signature: {}", wallet.id, signature_hex);
-        
+                
         // Step 7: Add L1 signature to transaction info
         tx_info.l1_sig = Some(signature_hex);
         tx_info.message_to_sign = None; // Remove MessageToSign from final payload
@@ -264,7 +221,6 @@ impl LighterClient {
         }
         
         info!("#{} | API key registered successfully!", wallet.id);
-        info!("#{} | Response: {:?}", wallet.id, response);
         
         Ok((api_private_key, api_public_key))
     }
@@ -293,9 +249,9 @@ impl LighterClient {
     async fn get_market_price(&self, token: &Token) -> Result<u64, TradingError> {
         let end_timestamp = Utc::now().timestamp_millis();
         let start_timestamp = end_timestamp - 60000;
-        let url = format!("{}/candlesticks?market_id={}&resolution=1m&start_timestamp={}&end_timestamp={}&count_back=0", self.base_url, token.get_market_index(Exchange::Lighter), start_timestamp, end_timestamp);
+        let url = format!("{}/candlesticks?market_id={}&resolution=1m&start_timestamp={}&end_timestamp={}&count_back=5", self.base_url, token.get_market_index(Exchange::Lighter), start_timestamp, end_timestamp);
         let response = Request::process_request(Method::GET, url, None, None, None).await?;
-        
+
         match response["candlesticks"].as_array() {
             Some(candlesticks) => {
 
@@ -306,8 +262,10 @@ impl LighterClient {
                     ));
                 }
 
-                let price_f64 = candlesticks[0]["close"].as_f64().unwrap();
-                let price = (price_f64 * 100.0).round() as u64;
+                let latest_candlestick = &candlesticks[candlesticks.len() - 1];
+                let price_f64 = latest_candlestick["close"].as_f64().unwrap();
+                let price = (price_f64 * 100.0) as u64; 
+
                 Ok(price)
             },
             None => return Err(TradingError::InvalidInput(format!("Candlesticks not found in response: {:?}", response))),
@@ -328,6 +286,77 @@ impl LighterClient {
         let base_amount_scaled = base_amount * Decimal::from(10000);
         
         Ok(base_amount_scaled.round().to_string().parse::<u64>().unwrap())
+    }
+
+    #[allow(unused)]
+    pub async fn update_leverage(&self, token: Token) -> Result<(), TradingError> {
+        let margin_mode = 0;
+        let leverage_fraction = 3333;
+        let nonce = self.get_nonce().await?;
+        let market_index = token.get_market_index(Exchange::Lighter);
+
+        let leverage_signed = self.signer_client.sign_update_leverage(
+            market_index,
+            leverage_fraction,
+            margin_mode,
+            nonce,
+        )?;
+
+
+        let tx_info_encoded = urlencoding::encode(&leverage_signed);
+        let body = format!(
+            "tx_type={}&tx_info={}&price_protection={}", 
+            TX_TYPE_UPDATE_LEVERAGE, 
+            tx_info_encoded, 
+            false
+        );
+
+        let leverage_hash = self.send_tx(body).await?;
+        info!("#{} | Leverage updated successfully! Hash: {}", self.wallet.id, leverage_hash);
+        Ok(())
+    }
+
+
+    async fn get_order_by_hash(&self, hash: &str) -> Result<LighterTx, TradingError> {
+        let url = format!("{}/tx?by=hash&value={}", self.base_url, hash);
+        let mut last_err = None;
+
+        for attempt in 1..=10 {
+            let response = match Request::process_request(Method::GET, url.clone(), None, None, None).await {
+                Ok(res) => res,
+                Err(e) => {
+                    last_err = Some(TradingError::OrderExecutionFailed(format!("Attempt {attempt}: request error: {e}")));
+                    sleep(Duration::from_millis(350)).await;
+                    continue;
+                }
+            };
+
+            let tx: Result<LighterTx, _> = serde_json::from_value(response.clone());
+
+            match tx {
+                Ok(tx) => {
+                    if tx.code == 200 && tx.executed_at != 0 {
+                        return Ok(tx);
+                    } else {
+                        last_err = Some(
+                            TradingError::OrderExecutionFailed(
+                                format!("Attempt {attempt}: Failed to get order by hash: {:?}", response)
+                            )
+                        );
+                    }
+                }
+                Err(e) => {
+                    last_err = Some(TradingError::OrderExecutionFailed(format!("Attempt {attempt}: deserialize error: {e}")));
+                }
+            }
+
+            // Wait a bit before next attempt if not last try
+            if attempt < 3 {
+                sleep(Duration::from_millis(350)).await;
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| TradingError::OrderExecutionFailed("get_order_by_hash failed after 3 attempts".to_string())))
     }
 
     async fn execute_market_buy_order(
@@ -364,28 +393,29 @@ impl LighterClient {
             order.tx_info.is_ask,
             order.tx_info.type_field,
             order.tx_info.time_in_force,
-            order.tx_info.reduce_only,
+            order.tx_info.reduce_only, 
             order.tx_info.trigger_price,
             order.tx_info.order_expiry,
             order.tx_info.nonce,
         )?;
 
-        let order_id = self.send_order(order.tx_type, &order_signed, order.price_protection).await?;
-        Ok(order_id)
-    }
-
-    
-    async fn send_order(&self, tx_type: i32, order_signed: &str, price_protection: bool) -> Result<String, TradingError> {
-        let headers = self.get_headers();
-        let url = format!("{}/sendTx", self.base_url);
-        let tx_info_encoded = urlencoding::encode(order_signed);
+        let tx_info_encoded = urlencoding::encode(&order_signed);
         
         let body = format!(
             "tx_type={}&tx_info={}&price_protection={}",
-            tx_type,
+            TX_TYPE_CREATE_ORDER,
             tx_info_encoded,
-            price_protection
+            false
         );
+
+        let order_hash = self.send_tx(body).await?;
+        Ok(order_hash)
+    }
+
+    
+    async fn send_tx(&self, body: String) -> Result<String, TradingError> {
+        let headers = self.get_headers();
+        let url = format!("{}/sendTx", self.base_url);
 
         let response = Request::process_request(
             Method::POST, 
@@ -393,11 +423,25 @@ impl LighterClient {
             Some(headers), 
             Some(body), 
             None
-        ).await?;
-        
-        println!("Response: {:#?}", response);
-        // Return the response as string or extract order ID
-        Ok(serde_json::to_string(&response).unwrap_or_else(|_| "Order sent successfully".to_string()))
+        )
+        .await?;
+
+
+        match response["code"].as_i64() {
+            Some(code) => {
+                if code != 200 {
+                    return Err(TradingError::InvalidInput(format!("Failed to send transaction: {}", response["message"].as_str().unwrap_or("Unknown error"))));
+                }
+
+                if let Some(tx_hash) = response.get("tx_hash") {
+                    return Ok(tx_hash.to_string().replace("\"", ""));
+                }
+
+                return Err(TradingError::InvalidInput(format!("Tx hash not found in response: {:?}", response)));
+            },
+            None => return Err(TradingError::InvalidInput(format!("Code not found in response: {:?}", response))),
+        };
+
     }
 
     /// Saves both API keys (private and public) and account index to api-keys.json
@@ -602,10 +646,13 @@ impl PerpExchange for LighterClient {
             return Err(TradingError::InsufficientBalance("Insufficient balance for USDC".to_string()));
         }
 
-        let order = self.execute_market_buy_order(token, side, base_amount, price).await?;
-        info!("#{} | Order sent: {}", self.wallet.id, order);
-        loop {};
+        let order_hash = self.execute_market_buy_order(token, side, base_amount, price).await?;
+        info!("#{} | Order sent: {}", self.wallet.id, order_hash);
+        
+        let tx = self.get_order_by_hash(&order_hash).await?;
+        info!("#{} | Order executed: {}", self.wallet.id, order_hash);
 
+        loop {};
         todo!("Implement position opening");
     }
 

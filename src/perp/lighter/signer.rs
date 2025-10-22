@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 //! # SignerClient - Rust implementation of the Lighter Protocol Signer
 //!
 //! This module provides a comprehensive Rust implementation of the Python SignerClient,

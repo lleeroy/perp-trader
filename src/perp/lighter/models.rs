@@ -57,6 +57,13 @@ pub struct LighterOrder {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LighterTx {
+    pub code: i32,
+    pub status: i64,
+    pub executed_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub struct LighterOrderInfo {
     #[serde(rename = "AccountIndex")]
@@ -118,7 +125,7 @@ impl LighterOrder {
                 nonce,
                 signature: "".to_string(),
             },
-            tx_type: 14,
+            tx_type: super::signer::TX_TYPE_CREATE_ORDER,
             price_protection: false,
         }
     }
