@@ -227,7 +227,7 @@ impl LighterClient {
         }
     }
 
-    async fn get_market_price(&self, token: &Token) -> Result<u64, TradingError> {
+    async fn get_market_price(&self, token: &Token, side: PositionSide) -> Result<u64, TradingError> {
         let end_timestamp = Utc::now().timestamp_millis();
         let start_timestamp = end_timestamp - 60000;
         let url = format!("{}/candlesticks?market_id={}&resolution=1m&start_timestamp={}&end_timestamp={}&count_back=5", self.base_url, token.get_market_index(Exchange::Lighter), start_timestamp, end_timestamp);
@@ -245,8 +245,13 @@ impl LighterClient {
 
                 let latest_candlestick = &candlesticks[candlesticks.len() - 1];
                 let price_f64 = latest_candlestick["close"].as_f64().unwrap();
-                let price = (price_f64 * 100.0) as u64; 
 
+                let adjusted_price_f64 = match side {
+                    PositionSide::Short => price_f64 * 0.995,
+                    PositionSide::Long => price_f64 * 1.005,
+                };
+
+                let price = (adjusted_price_f64 * 100.0) as u64;
                 Ok(price)
             },
             None => return Err(TradingError::InvalidInput(format!("Candlesticks not found in response: {:?}", response))),
@@ -317,18 +322,41 @@ impl LighterClient {
     async fn close_all_positions(&self) -> Result<(), TradingError> {
         let positions = self.get_active_positions().await?;
 
+        println!("Positions: {:#?}", positions);
         for position in positions {
             if position.position_value.parse::<Decimal>().unwrap_or(Decimal::ZERO) > Decimal::ZERO {
-                info!("#{} | Found open position to close: {}", self.wallet.id, position.symbol);
-
-                let base_amount = 0;
                 let token_id = position.market_id;
                 let token = Token::from_market_index(Exchange::Lighter, token_id);
-                let price = self.get_market_price(&token).await?;
-                let order = self.execute_market_order(&token, PositionSide::Short, base_amount, price).await?;
+
+                let position_side = match position.sign {
+                    1 => PositionSide::Long,
+                    -1 => PositionSide::Short,
+                    _ => return Err(TradingError::InvalidInput(format!("Invalid position sign: {}", position.sign))),
+                };
+
+                let position_side_to_close: PositionSide = match position.sign {
+                    1 => PositionSide::Short,
+                    -1 => PositionSide::Long,
+                    _ => return Err(TradingError::InvalidInput(format!("Invalid position sign: {}", position.sign))),
+                };
+
+                let price = self.get_market_price(&token, position_side_to_close).await?;
+                info!("#{} | Found open {} position to close: {}", self.wallet.id, position_side, position.symbol);
+
+                let base_amount = if position_side == PositionSide::Long {
+                    0
+                } else {
+                    self.calculate_base_amount(
+                        position.position_value.parse::<Decimal>()
+                        .unwrap_or(Decimal::ZERO), price)
+                        .await?
+                };
+
+
+                let order = self.execute_market_order(&token, position_side_to_close, base_amount, price, true).await?;
                 self.get_order_by_hash(&order).await?;
 
-                info!("#{} | 🔴🔴 Position closed: {} | PnL: {:.2} USDC", self.wallet.id, position.symbol, position.realized_pnl);
+                info!("#{} | 🔴🔴 Position closed: {} | PnL: {} USDC", self.wallet.id, position.symbol, position.realized_pnl);
             }
         }
 
@@ -385,6 +413,7 @@ impl LighterClient {
         side: PositionSide,
         base_amount: u64,
         price: u64,
+        close_position: bool,
     ) -> Result<String, TradingError> {
         let nonce = self.get_nonce().await?;
         let market_index = token.get_market_index(Exchange::Lighter);
@@ -396,7 +425,7 @@ impl LighterClient {
 
         let reduce_only = match side {
             PositionSide::Long => false,
-            PositionSide::Short => true,
+            PositionSide::Short => if close_position { true } else { false },
         };
 
         info!("#{} | Executing market {} order for {:?} with price {} | nonce: {}", self.wallet.id, side, token, price, nonce);
@@ -411,6 +440,7 @@ impl LighterClient {
             nonce,
         );
 
+        println!("Order: {:?}", order);
         let order_signed = self.signer_client.sign_create_order(
             market_index,
             order.tx_info.client_order_index,
@@ -558,7 +588,7 @@ impl PerpExchange for LighterClient {
         }
 
         let balance_usdc = self.get_usdc_balance().await?;
-        let price = self.get_market_price(&token).await?;
+        let price = self.get_market_price(&token, side).await?;
         let base_amount = self.calculate_base_amount(balance_usdc, price).await?;
 
         if balance_usdc < Decimal::from(MIN_TRADING_BALANCE) {
@@ -567,7 +597,7 @@ impl PerpExchange for LighterClient {
             );
         }
 
-        let order_hash = self.execute_market_order(&token, side, base_amount, price).await?;
+        let order_hash = self.execute_market_order(&token, side, base_amount, price, false).await?;
         info!("#{} | Order sent: {}", self.wallet.id, order_hash);
         
         let tx = self.get_order_by_hash(&order_hash).await?;

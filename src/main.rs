@@ -29,13 +29,13 @@ async fn main() -> Result<()> {
     let wallet = trader::wallet::Wallet::load_from_json(1).unwrap();
     let lighter_client = perp::lighter::client::LighterClient::new(&wallet).await.unwrap();
 
-    let close_at = Utc::now() + chrono::Duration::days(1);
-    let position = lighter_client.open_position(token, PositionSide::Long, close_at, Decimal::ZERO).await.unwrap();
+    // let close_at = Utc::now() + chrono::Duration::days(1);
+    // let position = lighter_client.open_position(token, PositionSide::Short, close_at, Decimal::ZERO).await.unwrap();
+    // println!("Position: {:#?}", position);
 
-    tokio::time::sleep(Duration::from_secs(10)).await;
+    // tokio::time::sleep(Duration::from_secs(10)).await;
     lighter_client.close_all_positions().await.unwrap();
     info!("All positions closed");
-
 
     Ok(())
 }

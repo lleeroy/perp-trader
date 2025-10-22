@@ -3091,6 +3091,7 @@ dependencies = [
  "chrono",
  "config",
  "dotenv",
+ "futures",
  "hex",
  "http",
  "libc",
