@@ -14,11 +14,11 @@ use crate::{
 	trader::{strategy::{StrategyStatus, TradingStrategy}, wallet::Wallet},
 };
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
 use rand::seq::SliceRandom;
 use sqlx::PgPool;
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, Duration as TokioDuration};
 
 
 pub struct TraderClient {
@@ -90,7 +90,7 @@ impl TraderClient {
 			if earliest_close > now {
 				let wait_duration = (earliest_close - now)
 					.to_std()
-					.unwrap_or(Duration::from_secs(0));
+					.unwrap_or(TokioDuration::from_secs(0));
 				info!(
 					"⏳ Waiting {} seconds until first strategy close time...",
 					wait_duration.as_secs()
@@ -107,7 +107,7 @@ impl TraderClient {
 				if strategy.close_at > now {
 					let remaining = (strategy.close_at - now)
 						.to_std()
-						.unwrap_or(Duration::from_secs(0));
+						.unwrap_or(TokioDuration::from_secs(0));
 					if remaining.as_secs() > 0 {
 						info!(
 							"⏳ Waiting {} seconds before closing strategy {}...",
@@ -233,6 +233,7 @@ impl TraderClient {
         // Step 4: Open positions for each allocation
         let mut long_positions = Vec::new();
         let mut short_positions = Vec::new();
+        let close_at = Utc::now() + Duration::days(1);
         
         for allocation in allocations {
 			// Find the wallet for this allocation
@@ -244,6 +245,7 @@ impl TraderClient {
                 .open_position(
                     selected_token.clone(),
                     allocation.side,
+                    close_at,
                     allocation.usdc_amount,
                 )
                 .await?;
@@ -301,7 +303,8 @@ impl TraderClient {
 		if deadline > now {
 			let wait = (deadline - now)
 				.to_std()
-				.unwrap_or(Duration::from_secs(0));
+				.unwrap_or(TokioDuration::from_secs(0));
+            
 			if wait.as_secs() > 0 {
 				sleep(wait).await;
 			}

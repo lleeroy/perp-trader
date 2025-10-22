@@ -23,7 +23,7 @@ pub struct LighterAccount {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LighterPosition {
-    pub market_id: u8,
+    pub market_id: i32,
     pub symbol: String,
     pub initial_margin_fraction: String,
     pub open_order_count: i64,
@@ -61,6 +61,7 @@ pub struct LighterTx {
     pub code: i32,
     pub status: i64,
     pub executed_at: i64,
+    pub hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,6 +104,7 @@ impl LighterOrder {
         base_amount: i64, 
         price: i64, 
         is_ask: bool, 
+        reduce_only: bool,
         nonce: i64,
     ) -> Self {
         let expired_at = Utc::now().timestamp_millis() + 60000;
@@ -117,7 +119,7 @@ impl LighterOrder {
                 client_order_index: 0,
                 type_field: 1,
                 time_in_force: 0,
-                reduce_only: false,
+                reduce_only,
                 api_key_index: 0,
                 trigger_price: 0,
                 order_expiry: 0,

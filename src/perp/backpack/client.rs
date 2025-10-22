@@ -2,7 +2,7 @@
 
 use async_trait::async_trait;
 use bpx_api_client::types::order::{ExecuteOrderPayload, Order, OrderType, Side};
-use chrono::{DateTime, Duration};
+use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
 use crate::error::TradingError;
 use crate::model::token::Token;
@@ -39,6 +39,22 @@ impl BackpackClient {
             client,
             wallet: wallet.clone(),
         }
+    }
+
+    /// Fetches all available balances from the Backpack exchange.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Vec<Balance>)` - A vector of balances for all supported assets, or a `TradingError`.
+    async fn get_balances(&self) -> Result<Vec<Balance>, TradingError> {
+        let balances = self.client.get_balances()
+            .await.map_err(|e| TradingError::ExchangeError(e.to_string()))?;
+        
+        Ok(balances.iter().map(|b| Balance {
+            asset: b.0.clone(),
+            free: b.1.available,
+            locked: b.1.locked,
+        }).collect())
     }
 
     /// Checks if the client is currently authenticated with the Backpack API.
@@ -123,22 +139,6 @@ impl PerpExchange for BackpackClient {
         })
     }
 
-    /// Fetches all available balances from the Backpack exchange.
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(Vec<Balance>)` - A vector of balances for all supported assets, or a `TradingError`.
-    async fn get_balances(&self) -> Result<Vec<Balance>, TradingError> {
-        let balances = self.client.get_balances()
-            .await.map_err(|e| TradingError::ExchangeError(e.to_string()))?;
-        
-        Ok(balances.iter().map(|b| Balance {
-            asset: b.0.clone(),
-            free: b.1.available,
-            locked: b.1.locked,
-        }).collect())
-    }
-
     /// Opens a new position on the Backpack exchange.
     ///
     /// # Arguments
@@ -148,7 +148,7 @@ impl PerpExchange for BackpackClient {
     /// # Returns
     ///
     /// * `Ok(Position)` containing the details of the opened position, or a `TradingError`.
-    async fn open_position(&self, token: Token, side: PositionSide, amount_usdc: Decimal) -> Result<Position, TradingError> {
+    async fn open_position(&self, token: Token, side: PositionSide, close_at: DateTime<Utc>, amount_usdc: Decimal) -> Result<Position, TradingError> {
         info!("#{} | <{}> opening position on {:?} with amount {:.2}USDC", self.wallet.id, side, token.symbol, amount_usdc);
         let payload = self.build_payload(&token, side, amount_usdc);
 
@@ -272,5 +272,9 @@ impl PerpExchange for BackpackClient {
     async fn get_usdc_balance(&self) -> Result<Decimal, TradingError> {
         let balance = self.get_balance("USDC").await?;
         Ok(balance.free)
+    }
+
+    async fn close_all_positions(&self) -> Result<(), TradingError> {
+        todo!("Implement close_all_positions for Backpack");
     }
 }

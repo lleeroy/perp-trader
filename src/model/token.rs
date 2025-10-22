@@ -25,6 +25,17 @@ impl std::fmt::Display for SupportedToken {
 }
 
 impl Token {
+    pub fn from_market_index(exchange: Exchange, market_index: i32) -> Self {
+        match exchange {
+            Exchange::Lighter | Exchange::Backpack => match market_index {
+                1 => Self::btc(),
+                0 => Self::eth(),
+                2 => Self::sol(),
+                _ => panic!("Invalid market index: {}", market_index),
+            },
+        }
+    }
+
     pub fn new(symbol: SupportedToken) -> Self {
         Self { symbol }
     }
@@ -49,17 +60,14 @@ impl Token {
         match self.symbol {
             SupportedToken::BTC => match exchange {
                 Exchange::Lighter => "BTC_USDC_PERP".to_string(),
-                Exchange::Hibachi => "BTC_USDC_PERP".to_string(),
                 Exchange::Backpack => "BTC_USDC_PERP".to_string(),
             },
             SupportedToken::ETH => match exchange {
                 Exchange::Lighter => "ETH_USDC_PERP".to_string(),
-                Exchange::Hibachi => "ETH_USDC_PERP".to_string(),
                 Exchange::Backpack => "ETH_USDC_PERP".to_string(),
             },
             SupportedToken::SOL => match exchange {
                 Exchange::Lighter => "SOL_USDC_PERP".to_string(),
-                Exchange::Hibachi => "SOL_USDC_PERP".to_string(),
                 Exchange::Backpack => "SOL_USDC_PERP".to_string(),
             },
         }
@@ -69,17 +77,14 @@ impl Token {
         match self.symbol {
             SupportedToken::BTC => match exchange {
                 Exchange::Lighter => 1,
-                Exchange::Hibachi => 1,
                 Exchange::Backpack => 1,
             },
             SupportedToken::ETH => match exchange {
                 Exchange::Lighter => 0,
-                Exchange::Hibachi => 0,
                 Exchange::Backpack => 0,
             },
             SupportedToken::SOL => match exchange {
                 Exchange::Lighter => 2,
-                Exchange::Hibachi => 2,
                 Exchange::Backpack => 2,
             },
         }
