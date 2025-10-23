@@ -1,7 +1,7 @@
 #![allow(unused)]
 
 use chrono::{DateTime, Utc};
-use rust_decimal::Decimal;
+use rust_decimal::{prelude::FromPrimitive, Decimal};
 use rand::Rng;
 use uuid::Uuid;
 use serde::{Deserialize, Serialize};
@@ -150,8 +150,11 @@ impl TradingStrategy {
     /// Generate balanced long/short allocations from wallet balances
     /// Ensures total long value ≈ total short value for market neutrality
     pub fn generate_balanced_allocations(
-        wallet_balances: Vec<(u8, Decimal)>,
+        wallet_balances: &Vec<(u8, Decimal)>,
     ) -> Result<Vec<WalletAllocation>, TradingError> {
+        use rand::seq::SliceRandom;
+        use rand::Rng;
+
         if wallet_balances.len() < 3 {
             return Err(TradingError::InvalidInput(
                 "At least 3 wallets are required".into()
@@ -160,49 +163,50 @@ impl TradingStrategy {
         
         let mut rng = rand::thread_rng();
         let total_balance: Decimal = wallet_balances.iter().map(|(_, b)| b).sum();
-        
         if total_balance <= Decimal::ZERO {
             return Err(TradingError::InvalidInput(
                 "Total wallet balance must be greater than zero".into()
             ));
         }
-        
-        // Randomly decide how many wallets go long vs short
-        // Ensure at least 1 long and at least 1 short (with remaining as shorts)
-        let num_longs = rng.gen_range(1..wallet_balances.len());
-        
-        // Shuffle wallet indices to randomly assign to long/short
+
+        // Shuffle wallet indices to randomly assign to long/short, as before
         let mut wallet_indices: Vec<usize> = (0..wallet_balances.len()).collect();
-        use rand::seq::SliceRandom;
         wallet_indices.shuffle(&mut rng);
-        
+
+        // Randomly split into long/short groups, ensuring at least 1 for each
+        let num_longs = rng.gen_range(1..wallet_balances.len());
         let long_indices = &wallet_indices[0..num_longs];
         let short_indices = &wallet_indices[num_longs..];
-        
-        // Calculate total balance for each side
-        let long_total_balance: Decimal = long_indices
-            .iter()
-            .map(|&i| wallet_balances[i].1)
-            .sum();
-        let short_total_balance: Decimal = short_indices
-            .iter()
-            .map(|&i| wallet_balances[i].1)
-            .sum();
-        
-        // To achieve market neutrality, we need equal USD value on both sides
-        // We'll use the smaller of the two totals as the maximum we can trade
+
+        // Calculate side totals (for future normalization of allocations)
+        let long_total_balance: Decimal = long_indices.iter().map(|&i| wallet_balances[i].1).sum();
+        let short_total_balance: Decimal = short_indices.iter().map(|&i| wallet_balances[i].1).sum();
+
+        // We'll use the minimum group total as the tradeable amount for both sides for neutrality
         let tradeable_amount = long_total_balance.min(short_total_balance);
-        
-        // Generate allocations for longs
+
         let mut allocations = Vec::new();
-        
-        for &idx in long_indices {
+
+        // Instead of always distributing fully by balance, generate random fractions to multiply
+        // each wallet's possible allocation within its group.
+        // This produces random allocation percentages per wallet (but doesn't exceed balance)
+        let mut random_factors: Vec<f64> = (0..wallet_balances.len()).map(|_| rng.gen_range(0.15..1.0)).collect();
+
+        // Generate random allocations for longs
+        let mut long_side_randoms: Vec<f64> = long_indices.iter().map(|&i| random_factors[i]).collect();
+        let long_side_sum: f64 = long_side_randoms.iter().sum();
+        for (&idx, &rf) in long_indices.iter().zip(long_side_randoms.iter()) {
             let (wallet_id, balance) = wallet_balances[idx];
-            // Proportional allocation based on wallet's balance relative to its side's total
-            let proportion = balance / long_total_balance;
-            let usdc_amount = tradeable_amount * proportion;
-            let percentage = (usdc_amount / balance) * Decimal::from(100);
-            
+            // assign this wallet a proportion of the SIDE's tradeable amount, proportional to random factor
+            let proportion = rf / long_side_sum;
+            let usdc_amount = Decimal::from_f64(tradeable_amount.to_string().parse::<f64>().unwrap() * proportion).unwrap();
+            // Don't allocate more than the wallet has
+            let usdc_amount = usdc_amount.min(balance);
+            let percentage = if balance > Decimal::ZERO {
+                (usdc_amount / balance) * Decimal::from(100)
+            } else {
+                Decimal::ZERO
+            };
             allocations.push(WalletAllocation {
                 wallet_id,
                 side: PositionSide::Long,
@@ -210,14 +214,20 @@ impl TradingStrategy {
                 percentage,
             });
         }
-        
-        for &idx in short_indices {
+
+        // Same for shorts
+        let mut short_side_randoms: Vec<f64> = short_indices.iter().map(|&i| random_factors[i]).collect();
+        let short_side_sum: f64 = short_side_randoms.iter().sum();
+        for (&idx, &rf) in short_indices.iter().zip(short_side_randoms.iter()) {
             let (wallet_id, balance) = wallet_balances[idx];
-            // Proportional allocation based on wallet's balance relative to its side's total
-            let proportion = balance / short_total_balance;
-            let usdc_amount = tradeable_amount * proportion;
-            let percentage = (usdc_amount / balance) * Decimal::from(100);
-            
+            let proportion = rf / short_side_sum;
+            let usdc_amount = Decimal::from_f64(tradeable_amount.to_string().parse::<f64>().unwrap() * proportion).unwrap();
+            let usdc_amount = usdc_amount.min(balance);
+            let percentage = if balance > Decimal::ZERO {
+                (usdc_amount / balance) * Decimal::from(100)
+            } else {
+                Decimal::ZERO
+            };
             allocations.push(WalletAllocation {
                 wallet_id,
                 side: PositionSide::Short,
@@ -225,9 +235,9 @@ impl TradingStrategy {
                 percentage,
             });
         }
-        
+
         // Log the allocation strategy
-        info!("Generated balanced allocation strategy:");
+        info!("Generated RANDOMIZED balanced allocation strategy:");
         let long_total: Decimal = allocations.iter()
             .filter(|a| a.side == PositionSide::Long)
             .map(|a| a.usdc_amount)
@@ -243,8 +253,48 @@ impl TradingStrategy {
                 alloc.wallet_id, alloc.side, alloc.percentage, alloc.usdc_amount
             );
         }
-        info!("  Total LONG: {:.2} USDC | Total SHORT: {:.2} USDC", long_total, short_total);
         
+        info!("  Total LONG: {:.2} USDC | Total SHORT: {:.2} USDC", long_total, short_total);
+
         Ok(allocations)
     }
+
+    /// Display strategy preview before execution
+    pub fn display_strategy_preview(
+        exchange_name: &str,
+        token_symbol: &str,
+        allocations: &[WalletAllocation],
+        wallet_balances: &[(u8, Decimal)],
+        duration_hours: i64
+    ) {
+        println!("\n╔══════════════════════════════════════════════════════════════╗");
+        println!("║                  STRATEGY PREVIEW                            ║");
+        println!("╚══════════════════════════════════════════════════════════════╝");
+        println!("\n📍 Exchange: {}", exchange_name);
+        println!("🪙 Token: {}", token_symbol);
+        println!("📅 Duration: {} hours", duration_hours);
+        
+        println!("\n💰 Wallet Balances:");
+        for (id, balance) in wallet_balances {
+            println!("   Wallet #{}: {:.2} USDC", id, balance);
+        }
+        
+        let longs: Vec<_> = allocations.iter().filter(|a| a.side == PositionSide::Long).collect();
+        let shorts: Vec<_> = allocations.iter().filter(|a| a.side == PositionSide::Short).collect();
+        
+        println!("\n📊 Planned LONG Positions ({}):", longs.len());
+        for (i, allocation) in longs.iter().enumerate() {
+            println!("   {}. Wallet #{} - ${:.2} USDC ({:.1}%)", 
+                i + 1, allocation.wallet_id, allocation.usdc_amount, allocation.percentage);
+        }
+        
+        println!("\n📉 Planned SHORT Positions ({}):", shorts.len());
+        for (i, allocation) in shorts.iter().enumerate() {
+            println!("   {}. Wallet #{} - ${:.2} USDC ({:.1}%)", 
+                i + 1, allocation.wallet_id, allocation.usdc_amount, allocation.percentage);
+        }
+        
+        println!("\n═══════════════════════════════════════════════════════════════\n");
+    }
+
 }

@@ -2,7 +2,7 @@ use std::{fs::File, io::BufReader};
 use serde::{Deserialize, Serialize};
 use anyhow::{Result};
 
-use crate::{config::AppConfig, error::TradingError, helpers::encode};
+use crate::{config::AppConfig, error::TradingError, helpers::encode, perp::{backpack::BackpackClient, lighter::client::LighterClient}};
 
 /// Wallet struct containing API secrets for authentication with exchanges
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,51 +15,82 @@ pub struct Wallet {
     pub backpack_api_secret: String,
 }
 
+
+#[allow(unused)]
+#[derive(Debug, Clone)]
+pub struct WalletTradingClient {
+    pub wallet: Wallet,
+    pub lighter_client: LighterClient,
+    pub backpack_client: BackpackClient,
+}
+
+impl WalletTradingClient {
+    pub async fn new(wallet: Wallet) -> Result<Self, TradingError> {
+        let lighter_client = LighterClient::new(&wallet).await?;
+        let backpack_client = BackpackClient::new(&wallet);
+        
+        Ok(WalletTradingClient { wallet, lighter_client, backpack_client })
+    }
+}
+
 #[allow(unused)]
 impl Wallet {
     /// Creates a new Wallet from the given id by loading from "api-keys.json"
     ///
-    /// # Arguments
-    ///
-    /// * `id` - The id of the wallet to load from "api-keys.json".
-    ///
-    /// # Returns
-    ///
-    /// # Returns
-    ///
-    /// * `Wallet` - The wallet struct loaded from "api-keys.json".
-    ///
-    /// # Errors
-    ///
-    /// * `anyhow::Error` - If the wallet is not found in "api-keys.json" or if the JSON is invalid.
+    /// This only parses the relevant fields from JSON, then creates a LighterClient with those fields and unites everything in the Wallet struct.
     pub fn load_from_json(id: u8) -> Result<Self, TradingError> {
-        let config = AppConfig::load().map_err(|e| TradingError::InvalidInput(e.to_string()))?;
-        let file = File::open("api-keys.json").map_err(|e| TradingError::InvalidInput(e.to_string()))?;
+        use serde_json::Value;
+
+        let config = AppConfig::load()
+            .map_err(|e| TradingError::InvalidInput(e.to_string()))?;
+        let file = File::open("api-keys.json")
+            .map_err(|e| TradingError::InvalidInput(e.to_string()))?;
         let reader = BufReader::new(file);
 
-        // The JSON in api-keys.json is a map from id (as string) to wallet values
-        let wallets_map: serde_json::Value = serde_json::from_reader(reader).map_err(|e| TradingError::InvalidInput(e.to_string()))?;
+        let wallets_map: Value = serde_json::from_reader(reader)
+            .map_err(|e| TradingError::InvalidInput(e.to_string()))?;
 
-        // Convert id to string for lookup, eg: "1"
         let id_key = id.to_string();
         let wallet_value = wallets_map.get(&id_key)
             .ok_or_else(|| TradingError::InvalidInput(format!("Wallet id '{}' not found in api-keys.json", id)))?;
 
-        // Deserialize the found value to the Wallet struct
-        let mut wallet: Wallet = serde_json::from_value(wallet_value.clone()).map_err(|e| TradingError::InvalidInput(e.to_string()))?;
-        
-        // Decrypt Ethereum private key
-        wallet.private_key = encode::decrypt_private_key(&wallet.private_key, &config.database.password).unwrap();
+        // Extract relevant fields manually from the json value
+        let private_key = wallet_value.get("private_key")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TradingError::InvalidInput("Missing field private_key".into()))?
+            .to_string();
 
-        if wallet.address.is_empty() {
+        let address = wallet_value.get("address")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TradingError::InvalidInput("Missing field address".into()))?
+            .to_string();
+
+        let backpack_api_key = wallet_value.get("backpack_api_key")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TradingError::InvalidInput("Missing field backpack_api_key".into()))?
+            .to_string();
+
+        let backpack_api_secret = wallet_value.get("backpack_api_secret")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TradingError::InvalidInput("Missing field backpack_api_secret".into()))?
+            .to_string();
+
+        let decrypted_private_key = encode::decrypt_private_key(&private_key, &config.database.password)
+            .map_err(|e| TradingError::InvalidInput(format!("Failed to decrypt private key: {e}")))?;
+
+        if address.is_empty() {
             return Err(TradingError::InvalidInput("Address is empty".to_string()));
         }
-
-        if wallet.private_key.is_empty() {
+        if decrypted_private_key.is_empty() {
             return Err(TradingError::InvalidInput("Private key is empty".to_string()));
         }
-        
-        
-        Ok(wallet)
+
+        Ok(Wallet {
+            id,
+            private_key: decrypted_private_key,
+            address,
+            backpack_api_key,
+            backpack_api_secret,
+        })
     }
 }

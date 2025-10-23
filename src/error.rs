@@ -39,6 +39,9 @@ pub enum TradingError {
     #[error("Order execution failed: {0}")]
     OrderExecutionFailed(String),
 
+    #[error("Invalid nonce: {0}")]
+    InvalidNonce(String),
+
     #[error("Position opening failed: {0}")]
     PositionOpeningFailed(String),
 

@@ -1,5 +1,3 @@
-#![allow(unused)]
-
 use crate::error::TradingError;
 use crate::trader::strategy::{StrategyStatus, TradingStrategy};
 use chrono::{DateTime, Utc};

@@ -86,6 +86,7 @@
 
 use crate::error::TradingError;
 use libloading::{Library, Symbol};
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json;
 use std::collections::HashMap;
@@ -210,6 +211,7 @@ pub struct TransactionInfo {
     pub extra: serde_json::Value,
 }
 
+#[derive(Debug, Clone)]
 /// Nonce manager to track nonces for each API key
 struct NonceManager {
     nonces: HashMap<i32, i64>,
@@ -250,6 +252,7 @@ impl NonceManager {
 }
 
 /// Main SignerClient for interacting with Lighter protocol
+#[derive(Debug)]
 pub struct SignerClient {
     library: Arc<Library>,
     url: String,
@@ -262,7 +265,24 @@ pub struct SignerClient {
     nonce_manager: Arc<Mutex<NonceManager>>,
 }
 
+
+/// Global lock to serialize all FFI operations
+/// This ensures that only one wallet can use the Go library at a time
+static FFI_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+/// Globally loaded shared library instance
+static GLOBAL_SIGNER_LIBRARY: Lazy<Arc<Library>> = Lazy::new(|| {
+    let lib_path = SignerClient::get_library_path()
+        .expect("Failed to determine signer library path");
+    let library = unsafe {
+        Library::new(&lib_path)
+            .expect(&format!("Failed to load signer library at: {}", lib_path.display()))
+    };
+    Arc::new(library)
+});
+
 impl SignerClient {
+
     /// Create a new SignerClient
     pub fn new(
         url: &str,
@@ -273,21 +293,13 @@ impl SignerClient {
         additional_private_keys: Option<HashMap<i32, String>>,
     ) -> Result<Self, TradingError> {
         let chain_id = if url.contains("mainnet") { 304 } else { 300 };
-        
         let clean_key = private_key.trim_start_matches("0x");
-        let lib_path = Self::get_library_path()?;
-        
-        let library = unsafe {
-            Library::new(&lib_path)
-                .map_err(|e| TradingError::SigningError(e.to_string()))?
-        };
-
         let end_api_key = max_api_key_index.unwrap_or(api_key_index);
-        
+
         // Build private keys map
         let mut private_keys = additional_private_keys.unwrap_or_default();
         private_keys.insert(api_key_index, clean_key.to_string());
-        
+
         // Validate that we have all required keys
         if end_api_key > api_key_index {
             for key_idx in (api_key_index + 1)..=end_api_key {
@@ -300,7 +312,7 @@ impl SignerClient {
         }
 
         let client = Self {
-            library: Arc::new(library),
+            library: GLOBAL_SIGNER_LIBRARY.clone(),
             url: url.to_string(),
             private_keys,
             chain_id,
@@ -317,6 +329,12 @@ impl SignerClient {
         }
 
         Ok(client)
+    }
+
+    /// Ensure we're using the correct client before any signing operation
+    fn ensure_correct_client(&self) -> Result<(), TradingError> {
+        // Recreate the client to ensure correct state
+        self.create_client_for_key(self.api_key_index)
     }
 
     fn get_library_path() -> Result<PathBuf, TradingError> {
@@ -551,6 +569,11 @@ impl SignerClient {
         order_expiry: i64,
         nonce: i64,
     ) -> Result<String, TradingError> {
+
+        // Acquire global lock for exclusive access
+        let _guard = FFI_LOCK.lock().unwrap();
+        self.ensure_correct_client()?;
+
         unsafe {
             let sign_fn: Symbol<
                 unsafe extern "C" fn(
@@ -595,6 +618,9 @@ impl SignerClient {
         order_index: i64,
         nonce: i64,
     ) -> Result<String, TradingError> {
+        let _guard = FFI_LOCK.lock().unwrap();
+        self.ensure_correct_client()?;
+
         unsafe {
             let sign_fn: Symbol<
                 unsafe extern "C" fn(c_int, c_longlong, c_longlong) -> StrOrErr,
@@ -644,6 +670,9 @@ impl SignerClient {
         time: i64,
         nonce: i64,
     ) -> Result<String, TradingError> {
+        let _guard = FFI_LOCK.lock().unwrap();
+        self.ensure_correct_client()?;
+
         unsafe {
             let sign_fn: Symbol<
                 unsafe extern "C" fn(c_int, c_longlong, c_longlong) -> StrOrErr,
@@ -828,6 +857,9 @@ impl SignerClient {
         margin_mode: i32,
         nonce: i64,
     ) -> Result<String, TradingError> {
+        let _guard = FFI_LOCK.lock().unwrap();
+        self.ensure_correct_client()?;
+        
         unsafe {
             let sign_fn: Symbol<
                 unsafe extern "C" fn(c_int, c_int, c_int, c_longlong) -> StrOrErr,

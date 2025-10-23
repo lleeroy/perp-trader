@@ -13,6 +13,7 @@ use crate::trader::wallet::Wallet;
 use bpx_api_client::{BACKPACK_API_BASE_URL, BpxClient};
 
 /// Backpack exchange client for interacting with the Backpack perpetual futures exchange.
+#[derive(Debug, Clone)]
 pub struct BackpackClient {
     client: BpxClient,
     wallet: Wallet,

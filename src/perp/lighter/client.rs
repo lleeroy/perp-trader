@@ -8,6 +8,7 @@ use urlencoding;
 use alloy::signers::{Signature, SignerSync};
 use alloy::signers::local::PrivateKeySigner;
 use alloy::primitives::eip191_hash_message;
+use crate::error::RequestError;
 use crate::model::PositionStatus;
 use crate::perp::lighter::models::{LighterPosition, LighterTx};
 use crate::{error::TradingError, model::{balance::Balance, token::Token, Exchange, Position, PositionSide}, perp::{lighter::{models::{LighterAccount, LighterOrder}, signer::SignerClient}, PerpExchange}, request::Request, trader::wallet::Wallet};
@@ -15,9 +16,10 @@ use crate::perp::lighter::signer::{TX_TYPE_CHANGE_PUB_KEY, TX_TYPE_CREATE_ORDER,
 
 const DEFAULT_API_KEY_INDEX: i32 = 0;
 const DEFAULT_BASE_URL: &str = "https://mainnet.zklighter.elliot.ai/api/v1";
-const MIN_TRADING_BALANCE: i64 = 10;
+
 
 #[allow(unused)]
+#[derive(Debug, Clone)]
 pub struct LighterClient {
     wallet: Wallet,
     account_index: u32,
@@ -48,6 +50,7 @@ impl LighterClient {
             account_index, 
             api_key_index
         ).await?;
+
         
         // Create signer client with the API key
         let signer_client = SignerClient::new(
@@ -415,57 +418,78 @@ impl LighterClient {
         price: u64,
         close_position: bool,
     ) -> Result<String, TradingError> {
-        let nonce = self.get_nonce().await?;
         let market_index = token.get_market_index(Exchange::Lighter);
+        let is_ask = matches!(side, PositionSide::Short);
+        let reduce_only = matches!(side, PositionSide::Short) && close_position;
+        let mut last_nonce_error: Option<String> = None;
 
-        let is_ask = match side {
-            PositionSide::Long => false,
-            PositionSide::Short => true,
-        };
+        for attempt in 0..2 {
+            let nonce = self.get_nonce().await?;
 
-        let reduce_only = match side {
-            PositionSide::Long => false,
-            PositionSide::Short => if close_position { true } else { false },
-        };
+            info!(
+                "#{} | Executing market {} order for {:?} with price {} | nonce: {} | attempt: {}",
+                self.wallet.id, side, token, price, nonce, attempt
+            );
 
-        info!("#{} | Executing market {} order for {:?} with price {} | nonce: {}", self.wallet.id, side, token, price, nonce);
+            let order = LighterOrder::new(
+                self.account_index,
+                market_index,
+                base_amount as i64,
+                price as i64,
+                is_ask,
+                reduce_only,
+                nonce,
+            );
 
-        let order = LighterOrder::new(
-            self.account_index,
-            market_index,
-            base_amount as i64,
-            price as i64,
-            is_ask, 
-            reduce_only,
-            nonce,
-        );
+            let order_signed = self.signer_client.sign_create_order(
+                market_index,
+                order.tx_info.client_order_index,
+                order.tx_info.base_amount,
+                order.tx_info.price,
+                order.tx_info.is_ask,
+                order.tx_info.type_field,
+                order.tx_info.time_in_force,
+                order.tx_info.reduce_only,
+                order.tx_info.trigger_price,
+                order.tx_info.order_expiry,
+                order.tx_info.nonce,
+            )?;
 
-        println!("Order: {:?}", order);
-        let order_signed = self.signer_client.sign_create_order(
-            market_index,
-            order.tx_info.client_order_index,
-            order.tx_info.base_amount,
-            order.tx_info.price,
-            order.tx_info.is_ask,
-            order.tx_info.type_field,
-            order.tx_info.time_in_force,
-            order.tx_info.reduce_only, 
-            order.tx_info.trigger_price,
-            order.tx_info.order_expiry,
-            order.tx_info.nonce,
-        )?;
+            println!("Order signed: {:?}", order_signed);
 
-        let tx_info_encoded = urlencoding::encode(&order_signed);
-        
-        let body = format!(
-            "tx_type={}&tx_info={}&price_protection={}",
-            TX_TYPE_CREATE_ORDER,
-            tx_info_encoded,
-            false
-        );
+            let tx_info_encoded = urlencoding::encode(&order_signed);
 
-        let order_hash = self.send_tx(body).await?;
-        Ok(order_hash)
+            let body = format!(
+                "tx_type={}&tx_info={}&price_protection={}",
+                TX_TYPE_CREATE_ORDER,
+                tx_info_encoded,
+                false
+            );
+
+            let order_hash_result = self.send_tx(body).await;
+
+            match order_hash_result {
+                Ok(order_hash) => return Ok(order_hash),
+                Err(e) => match e {
+                    TradingError::InvalidNonce(e) => {
+                        last_nonce_error = Some(e.clone());
+                        warn!("#{} | Invalid nonce. Retrying...", self.wallet.id);
+
+                        continue;
+                    }
+                    _ => return Err(e),
+                },
+            }
+        }
+
+        // If we reach here, all attempts failed due to nonce error
+        if let Some(e) = last_nonce_error {
+            return Err(TradingError::InvalidNonce(e));
+        } else {
+            return Err(TradingError::OrderExecutionFailed(
+                "Failed to execute market order after multiple attempts".to_string(),
+            ));
+        }
     }
  
     async fn send_tx(&self, body: String) -> Result<String, TradingError> {
@@ -479,24 +503,40 @@ impl LighterClient {
             Some(body), 
             None
         )
-        .await?;
+        .await;
 
-
-        match response["code"].as_i64() {
-            Some(code) => {
-                if code != 200 {
-                    return Err(TradingError::InvalidInput(format!("Failed to send transaction: {}", response["message"].as_str().unwrap_or("Unknown error"))));
+        match response {
+            Ok(response) => {
+                match response["code"].as_i64() {
+                    Some(code) => {
+                        if code != 200 {
+                            return Err(TradingError::InvalidInput(format!("Failed to send transaction: {}", response["message"].as_str().unwrap_or("Unknown error"))));
+                        }
+        
+                        if let Some(tx_hash) = response.get("tx_hash") {
+                            return Ok(tx_hash.to_string().replace("\"", ""));
+                        }
+        
+                        return Err(TradingError::InvalidInput(format!("Tx hash not found in response: {:?}", response)));
+                    },
+                    None => return Err(TradingError::InvalidInput(format!("Code not found in response: {:?}", response))),
                 }
-
-                if let Some(tx_hash) = response.get("tx_hash") {
-                    return Ok(tx_hash.to_string().replace("\"", ""));
-                }
-
-                return Err(TradingError::InvalidInput(format!("Tx hash not found in response: {:?}", response)));
             },
-            None => return Err(TradingError::InvalidInput(format!("Code not found in response: {:?}", response))),
-        };
+            Err(e) => {
+                match e {
+                    RequestError::ApiError(e) => {
+                        if e.contains("invalid nonce") {
+                            return Err(TradingError::InvalidNonce(e));
+                        }
 
+                        return Err(TradingError::OrderExecutionFailed(e.to_string()));
+                    },
+                    _ => {
+                        return Err(TradingError::OrderExecutionFailed(e.to_string()));
+                    }
+                }
+            }
+        }
     }
 
     fn get_headers(&self) -> HeaderMap {
@@ -580,23 +620,15 @@ impl PerpExchange for LighterClient {
     }
 
 
-    async fn open_position(&self, token: Token, side: PositionSide, close_at: DateTime<Utc>, _amount_usdc: Decimal) -> Result<Position, TradingError> {
+    async fn open_position(&self, token: Token, side: PositionSide, close_at: DateTime<Utc>, amount_usdc: Decimal) -> Result<Position, TradingError> {
         if let Ok(positions) = self.get_active_positions().await {
             if !positions.is_empty() {
                 return Err(TradingError::AtomicOperationFailed("Position already open".to_string()));
             }
         }
 
-        let balance_usdc = self.get_usdc_balance().await?;
         let price = self.get_market_price(&token, side).await?;
-        let base_amount = self.calculate_base_amount(balance_usdc, price).await?;
-
-        if balance_usdc < Decimal::from(MIN_TRADING_BALANCE) {
-            return Err(TradingError::InsufficientBalance(
-                format!("Insufficient balance for USDC! Balance: {:.2} USDC", balance_usdc))
-            );
-        }
-
+        let base_amount = self.calculate_base_amount(amount_usdc, price).await?;
         let order_hash = self.execute_market_order(&token, side, base_amount, price, false).await?;
         info!("#{} | Order sent: {}", self.wallet.id, order_hash);
         
