@@ -13,12 +13,13 @@ mod helpers;
 use std::fs::File;
 use std::io::BufReader;
 use anyhow::{Result, Context};
-use bpx_api_client::types::trade;
 use inquire::{Select, Confirm};
 use rand::Rng;
 use crate::config::AppConfig;
+use crate::perp::PerpExchange;
 use crate::trader::client::TraderClient;
-use crate::trader::strategy::TradingStrategy;
+use colored::*;
+use std::io::Write;
 
 
 /// Load all available wallet IDs from api-keys.json
@@ -44,48 +45,34 @@ fn load_all_wallet_ids() -> Result<Vec<u8>> {
 }
 
 
-/// Display strategy details in a formatted way
-fn display_strategy_result(strategy: &TradingStrategy) {
-    println!("\n╔══════════════════════════════════════════════════════════════╗");
-    println!("║                  STRATEGY EXECUTED                           ║");
-    println!("╚══════════════════════════════════════════════════════════════╝");
-    println!("\n✅ Strategy ID: {}", strategy.id);
-    println!("🪙 Token: {}", strategy.token_symbol);
-    println!("👛 Wallets: {:?}", strategy.wallet_ids);
-    println!("📈 Status: {}", strategy.status);
-    println!("\n📅 Schedule:");
-    println!("   • Opened at:  {}", strategy.opened_at.format("%Y-%m-%d %H:%M:%S UTC"));
-    println!("   • Close at:   {}", strategy.close_at.format("%Y-%m-%d %H:%M:%S UTC"));
-    
-    println!("\n📊 LONG Positions ({}):", strategy.longs.len());
-    println!("   Total Size: {} tokens", strategy.longs_size);
-    for (i, pos) in strategy.longs.iter().enumerate() {
-        println!("   {}. Wallet #{} - Size: {} tokens - Status: {}", 
-            i + 1, pos.wallet_id, pos.size, pos.status);
-    }
-    
-    println!("\n📉 SHORT Positions ({}):", strategy.shorts.len());
-    println!("   Total Size: {} tokens", strategy.shorts_size);
-    for (i, pos) in strategy.shorts.iter().enumerate() {
-        println!("   {}. Wallet #{} - Size: {} tokens - Status: {}", 
-            i + 1, pos.wallet_id, pos.size, pos.status);
-    }
-    
-    println!("\n═══════════════════════════════════════════════════════════════\n");
-}
-
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    pretty_env_logger::init();
-    info!("🚀 Starting perp-trader application...");
+    // Initialize logger with custom formatter
+    env_logger::Builder::from_default_env()
+        .format(|buf, record| {
+            let level = record.level();
+            let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+            
+            let level_string = match level {
+                log::Level::Error => format!(" {} ", level).on_red().black().to_string(),
+                log::Level::Warn => format!(" {}  ", level).on_yellow().black().to_string(),
+                log::Level::Info => format!(" {}  ", level).to_string(),
+                log::Level::Debug => format!(" {} ", level).to_string(),
+                log::Level::Trace => format!(" {} ", level).to_string(),
+            };
+            
+            writeln!(
+                buf,
+                "{} {}: {}",
+                timestamp.to_string().dimmed(),
+                level_string,
+                record.args()
+            )
+        })
+    .init();
 
-    // let token = model::token::Token::eth();
-    // let wallet = trader::wallet::Wallet::load_from_json(1)?;
-    // let client = crate::perp::lighter::client::LighterClient::new(&wallet).await?;
-    // let close_at = chrono::Utc::now() + chrono::Duration::hours(1);
-    // perp::PerpExchange::close_all_positions(&client).await?;
-    // loop {};
+    info!("🚀 Starting perp-trader application...");
 
     // Load configuration
     let config = AppConfig::load()?;
@@ -149,24 +136,23 @@ async fn main() -> Result<()> {
     
     info!("✅ Trader client initialized");
     
-    // Generate random duration between 4-8 hours
+    // Generate random duration between 1-60 minutes
     let mut rng = rand::thread_rng();
-    let duration_hours = rng.gen_range(1..=1);
+    let duration_minutes = rng.gen_range(1..=3);
 
-    trader_client.close_all_active_strategies().await?;
 
-    // // Execute selected strategy
-    // let strategy = if is_backpack {
-    //     trader_client.farm_points_on_backpack_from_multiple_wallets(duration_hours).await?
-    // } else {
-    //     trader_client.farm_points_on_lighter_from_multiple_wallets(duration_hours).await?
-    // };
+    // Execute selected strategy
+    if is_backpack {
+        trader_client.farm_points_on_backpack_from_multiple_wallets(duration_minutes).await?
+    } else {
+        trader_client.farm_points_on_lighter_from_multiple_wallets(duration_minutes).await?
+    };
 
-    // let active_strategies = trader_client.get_active_strategies().await?;
+    let active_strategies = trader_client.get_active_strategies().await?;
 
-    // if !active_strategies.is_empty() {
-    //     trader_client.monitor_and_close_strategies(active_strategies).await?;
-    // }
+    if !active_strategies.is_empty() {
+        trader_client.monitor_and_close_strategies(active_strategies).await?;
+    }
 
     Ok(())
 }

@@ -265,14 +265,13 @@ impl TradingStrategy {
         token_symbol: &str,
         allocations: &[WalletAllocation],
         wallet_balances: &[(u8, Decimal)],
-        duration_hours: i64
+        duration_minutes: i64
     ) {
-        println!("\n╔══════════════════════════════════════════════════════════════╗");
-        println!("║                  STRATEGY PREVIEW                            ║");
-        println!("╚══════════════════════════════════════════════════════════════╝");
+        println!("\nSTRATEGY PREVIEW\n");
+        
         println!("\n📍 Exchange: {}", exchange_name);
         println!("🪙 Token: {}", token_symbol);
-        println!("📅 Duration: {} hours", duration_hours);
+        println!("📅 Duration: {} minutes", duration_minutes);
         
         println!("\n💰 Wallet Balances:");
         for (id, balance) in wallet_balances {
@@ -294,7 +293,6 @@ impl TradingStrategy {
                 i + 1, allocation.wallet_id, allocation.usdc_amount, allocation.percentage);
         }
         
-        println!("\n═══════════════════════════════════════════════════════════════\n");
     }
 
 }

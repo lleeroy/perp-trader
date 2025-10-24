@@ -1082,21 +1082,6 @@ impl SignerClient {
         Ok(tx_info)
     }
 
-    pub fn create_auth_token(&self, deadline: Option<i64>) -> Result<String, TradingError> {
-        // Note: CreateAuthToken might need to be added to FfiCommand if it requires client state
-        // For now, assuming it doesn't need specific client context
-        Err(TradingError::SigningError(
-            "create_auth_token not yet implemented in worker thread model".to_string(),
-        ))
-    }
-
-    pub fn check_client(&self) -> Result<(), TradingError> {
-        // Check needs to be added to FfiCommand if required
-        Err(TradingError::SigningError(
-            "check_client not yet implemented in worker thread model".to_string(),
-        ))
-    }
-
     pub fn switch_api_key(&self, api_key: i32) -> Result<(), TradingError> {
         self.nonce_manager.lock().unwrap().switch_api_key(api_key);
         Ok(())

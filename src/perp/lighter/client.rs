@@ -275,7 +275,6 @@ impl LighterClient {
                 }
             };
 
-            println!("TX response: {:#?}", response);
             let tx: Result<LighterTx, _> = serde_json::from_value(response.clone());
 
             match tx {
@@ -351,7 +350,7 @@ impl LighterClient {
                         Ok(p) => p,
                         Err(e) => {
                             error!(
-                                "#{} | Failed to fetch price for {} (attempt {}): {}. Trying again...",
+                                "#{} | failed to fetch price for {} (attempt {}): {}. Trying again...",
                                 self.wallet.id, position.symbol, attempt, e
                             );
                             last_err = Some(e.into());
@@ -383,17 +382,39 @@ impl LighterClient {
 
                     match self.get_order_by_hash(&order).await {
                         Ok(_) => {
-                            info!(
-                                "#{} | 🔴🔴 Position closed: {} | PnL: {} USDC",
-                                self.wallet.id, position.symbol, position.realized_pnl
-                            );
+                            info!("#{} | found order by hash: {}", self.wallet.id, order);
+                            let positions = self.get_active_positions().await?;
+                            let market_index = token.get_market_index(Exchange::Lighter);
 
-                            closed = true;
-                            break;
+                            info!("#{} | looking in positions if still open...", self.wallet.id);
+
+                            if let Some(pos) = positions.iter().find(|p| p.market_id == market_index) {
+                                let pos_value = pos.position_value.parse::<Decimal>().unwrap_or(Decimal::ZERO);
+                                info!("#{} | position value: {}", self.wallet.id, pos_value);
+
+                                if pos_value == Decimal::ZERO {
+                                    info!("#{} | position size is 0, which means it closed: {}", self.wallet.id, pos.symbol);
+                                    info!("#{} | 🔴🔴 position closed: {}", self.wallet.id, pos.symbol);
+                                    closed = true;
+                                    break;
+                                } else {
+                                    return Err(TradingError::ExchangeError(format!(
+                                        "Failed to close position on market index {} with token {}",
+                                        market_index,
+                                        token.get_symbol_string(Exchange::Lighter)
+                                    )));
+                                }
+                            } else {
+                                info!("#{} | position not found in positions, which means it closed: {}", self.wallet.id, position.symbol);
+                                info!("#{} | 🔴🔴 position closed: {}", self.wallet.id, position.symbol);
+
+                                closed = true;
+                                break;
+                            }
                         }
                         Err(e) => {
                             error!(
-                                "#{} | Failed to confirm close of position {} (attempt {}): {}. Trying again...",
+                                "#{} | failed to confirm close of position {} (attempt {}): {}. Trying again...",
                                 self.wallet.id, position.symbol, attempt, e
                             );
 
@@ -407,7 +428,7 @@ impl LighterClient {
                 if !closed {
                     if let Some(e) = last_err {
                         error!(
-                            "#{} | Position close ultimately failed for {} after 3 attempts. Last error: {}",
+                            "#{} | position close ultimately failed for {} after 3 attempts. Last error: {}",
                             self.wallet.id, position.symbol, e
                         );
                     }
@@ -507,7 +528,6 @@ impl LighterClient {
                 order.tx_info.nonce,
             )?;
 
-            println!("Order signed: {:?}", order_signed);
             let tx_info_encoded = urlencoding::encode(&order_signed);
 
             let body = format!(
@@ -681,10 +701,8 @@ impl PerpExchange for LighterClient {
         let price = self.get_market_price(&token, side).await?;
         let base_amount = self.calculate_base_amount(amount_usdc, price).await?;
         let order_hash = self.execute_market_order(&token, side, base_amount, price, false).await?;
-        info!("#{} | Order sent: {}", self.wallet.id, order_hash);
-        
+        info!("#{} | Order sent: {}", self.wallet.id, order_hash);        
         let tx = self.get_order_by_hash(&order_hash).await?;
-        info!("#{} | 🟢🟢 Order executed: {}", self.wallet.id, tx.hash);
 
         let positions = self.get_active_positions().await?;
         let market_index = token.get_market_index(Exchange::Lighter);
@@ -693,6 +711,8 @@ impl PerpExchange for LighterClient {
             let pos_value = pos.position_value.parse::<Decimal>().unwrap_or(Decimal::ZERO);
 
             if pos_value > Decimal::ZERO {
+                info!("#{} | 🟢🟢 position opened: {}", self.wallet.id, tx.hash);
+
                 return Ok(Position {
                     wallet_id: self.wallet.id,
                     id,

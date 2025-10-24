@@ -19,6 +19,8 @@ use rust_decimal::Decimal;
 use rand::{seq::SliceRandom};
 use sqlx::PgPool;
 use tokio::time::{sleep, Duration as TokioDuration};
+use colored::*;
+
 
 pub struct TraderClient {
     wallets: Vec<Wallet>,
@@ -63,14 +65,20 @@ impl TraderClient {
         let strategies = self.get_active_strategies().await?;
 
         for strategy in strategies {
-            self.set_strategy_status(&strategy.id, StrategyStatus::Closing, None, None).await?;
+            self.set_strategy_status(&strategy.id, 
+                StrategyStatus::Closing, 
+                None, None)
+            .await?;
+
+
             match self.close_all_positions_on_lighter().await {
                 Ok(_) => {
                     info!("✅ Strategy {} closed successfully", strategy.id);
                     self.set_strategy_status(&strategy.id, StrategyStatus::Closed, Some(Utc::now()), None).await?;
                 }
                 Err(e) => {
-                    error!("❌ Failed to close all positions: {}", e);
+                    error!("{}", format!("❌ Failed to close all positions: {} | YOU NEED TO CLOSE THE POSITIONS MANUALLY!", e).on_red());
+                    self.set_strategy_status(&strategy.id, StrategyStatus::Failed, Some(Utc::now()), None).await?;
                 }
             }
         }
@@ -103,7 +111,7 @@ impl TraderClient {
         // Display strategies being monitored
         info!("📋 Monitoring {} strategies:", strategies.len());
         for strategy in &strategies {
-            info!("  🎯 Strategy {} | Token: {} | Wallets: {:?} | Close at: {}", 
+            info!("🎯 Strategy {} | Token: {} | Wallets: {:?} | Close at: {}", 
                 strategy.id, strategy.token_symbol, strategy.wallet_ids, strategy.close_at);
         }
 
@@ -312,7 +320,7 @@ impl TraderClient {
     /// - Returns a TradingStrategy tracking all positions
     pub async fn farm_points_on_lighter_from_multiple_wallets(
         &self,
-        duration_hours: i64,
+        duration_minutes: i64,
     ) -> Result<TradingStrategy, TradingError> {
         info!("🎯 Starting Lighter farming strategy with {} wallets", self.wallets.len());
 
@@ -335,8 +343,8 @@ impl TraderClient {
         info!("🎲 Selected token: {:?}", selected_token.symbol);
 
         // Step 4: Open positions for each allocation (in parallel)
-        let close_at = Utc::now() + Duration::minutes(duration_hours);
-        info!("⏱️  Strategy duration: {} hours", duration_hours);
+        let close_at = Utc::now() + Duration::minutes(duration_minutes);
+        info!("⏱️  Strategy duration: {} minutes", duration_minutes);
         
         // Create futures for all position openings
         let mut position_futures = Vec::new();
@@ -347,7 +355,7 @@ impl TraderClient {
             &token_symbol,
             &allocations,
             &wallet_balances,
-            duration_hours
+            duration_minutes
         );
 
         // Ask for final confirmation before opening positions
@@ -467,9 +475,9 @@ impl TraderClient {
         
         info!("✅ Strategy {} executed successfully!", strategy_id);
         info!("   Token: {}", strategy.token_symbol);
-        info!("   Long positions: {} | Total size: {}", strategy.longs.len(), strategy.longs_size);
-        info!("   Short positions: {} | Total size: {}", strategy.shorts.len(), strategy.shorts_size);
-        info!("   Close at: {}", strategy.close_at);
+        info!("   Long positions: {} | Total size: {:.2} USDC", strategy.longs.len(), strategy.longs_size);
+        info!("   Short positions: {} | Total size: {:.2} USDC", strategy.shorts.len(), strategy.shorts_size);
+        info!("   Close at: {}", strategy.close_at);    
         
         Ok(strategy)
     }
@@ -516,10 +524,6 @@ impl TraderClient {
 			.await
 	}
 
-	fn sum_pnl(pairs: &[(String, Decimal)]) -> Decimal {
-		pairs.iter().map(|(_, pnl)| *pnl).sum()
-	}
-
     fn get_lighter_client(&self, wallet_id: u8) -> Result<LighterClient, TradingError> {
         Ok(self.wallet_trading_clients
             .iter().find(|w| w.wallet.id == wallet_id)
@@ -539,7 +543,7 @@ impl TraderClient {
     async fn close_all_positions_on_lighter(&self) -> Result<(), TradingError> {
         let mut futures = Vec::new();
         for wallet in &self.wallets {
-            let client = self.get_lighter_client(wallet.id)?;
+            let client = LighterClient::new(&wallet).await?;
             
             futures.push(async move {
                 client.close_all_positions().await
@@ -548,11 +552,9 @@ impl TraderClient {
 
         let results = futures::future::join_all(futures).await;
         for result in results {
-            match result {
-                Ok(_) => {},
-                Err(e) => {
-                    error!("❌ Failed to close all positions on Lighter: {}", e);
-                }
+            if let Err(e) = result {
+                error!("❌ Failed to close all positions on Lighter: {}", e);
+                return Err(e);
             }
         }
 
