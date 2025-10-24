@@ -13,6 +13,7 @@ mod helpers;
 use std::fs::File;
 use std::io::BufReader;
 use anyhow::{Result, Context};
+use bpx_api_client::types::trade;
 use inquire::{Select, Confirm};
 use rand::Rng;
 use crate::config::AppConfig;
@@ -79,13 +80,11 @@ async fn main() -> Result<()> {
     pretty_env_logger::init();
     info!("🚀 Starting perp-trader application...");
 
-    // let token = Token::eth();
-    // let wallet = trader::wallet::Wallet::load_from_json(3)?;
+    // let token = model::token::Token::eth();
+    // let wallet = trader::wallet::Wallet::load_from_json(1)?;
     // let client = crate::perp::lighter::client::LighterClient::new(&wallet).await?;
-
-    // let close_at = Utc::now() + chrono::Duration::hours(1);
-    // client.open_position(token, PositionSide::Long, close_at, Decimal::from(100)).await?;
-
+    // let close_at = chrono::Utc::now() + chrono::Duration::hours(1);
+    // perp::PerpExchange::close_all_positions(&client).await?;
     // loop {};
 
     // Load configuration
@@ -152,21 +151,22 @@ async fn main() -> Result<()> {
     
     // Generate random duration between 4-8 hours
     let mut rng = rand::thread_rng();
-    let duration_hours = rng.gen_range(4..=8);
+    let duration_hours = rng.gen_range(1..=1);
 
-    // Execute selected strategy
-    let strategy = if is_backpack {
-        trader_client.farm_points_on_backpack_from_multiple_wallets(duration_hours).await?
-    } else {
-        trader_client.farm_points_on_lighter_from_multiple_wallets(duration_hours).await?
-    };
+    trader_client.close_all_active_strategies().await?;
 
-    // Display the executed strategy results
-    display_strategy_result(&strategy);
+    // // Execute selected strategy
+    // let strategy = if is_backpack {
+    //     trader_client.farm_points_on_backpack_from_multiple_wallets(duration_hours).await?
+    // } else {
+    //     trader_client.farm_points_on_lighter_from_multiple_wallets(duration_hours).await?
+    // };
 
-    info!("✅ Strategy confirmed and positions opened successfully!");
-    info!("🎉 All positions are now active. The strategy will run until {}", 
-        strategy.close_at.format("%Y-%m-%d %H:%M:%S UTC"));
+    // let active_strategies = trader_client.get_active_strategies().await?;
+
+    // if !active_strategies.is_empty() {
+    //     trader_client.monitor_and_close_strategies(active_strategies).await?;
+    // }
 
     Ok(())
 }

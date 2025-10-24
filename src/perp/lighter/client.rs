@@ -250,8 +250,8 @@ impl LighterClient {
                 let price_f64 = latest_candlestick["close"].as_f64().unwrap();
 
                 let adjusted_price_f64 = match side {
-                    PositionSide::Short => price_f64 * 0.995,
-                    PositionSide::Long => price_f64 * 1.005,
+                    PositionSide::Short => price_f64 * 0.99,
+                    PositionSide::Long => price_f64 * 1.01,
                 };
 
                 let price = (adjusted_price_f64 * 100.0) as u64;
@@ -265,7 +265,7 @@ impl LighterClient {
         let url = format!("{}/tx?by=hash&value={}", self.base_url, hash);
         let mut last_err = None;
 
-        for attempt in 1..=10 {
+        for attempt in 1..=3 {
             let response = match Request::process_request(Method::GET, url.clone(), None, None, None).await {
                 Ok(res) => res,
                 Err(e) => {
@@ -275,16 +275,17 @@ impl LighterClient {
                 }
             };
 
+            println!("TX response: {:#?}", response);
             let tx: Result<LighterTx, _> = serde_json::from_value(response.clone());
 
             match tx {
                 Ok(tx) => {
-                    if tx.code == 200 && tx.status == 3 {
+                    if tx.code == 200 {
                         return Ok(tx);
                     } else {
                         last_err = Some(
                             TradingError::OrderExecutionFailed(
-                                format!("Attempt {attempt}: Failed to get order by hash: {:?}", response)
+                                format!("Attempt {attempt}: Failed to get order by hash.")
                             )
                         );
                     }
@@ -325,7 +326,6 @@ impl LighterClient {
     async fn close_all_positions(&self) -> Result<(), TradingError> {
         let positions = self.get_active_positions().await?;
 
-        println!("Positions: {:#?}", positions);
         for position in positions {
             if position.position_value.parse::<Decimal>().unwrap_or(Decimal::ZERO) > Decimal::ZERO {
                 let token_id = position.market_id;
@@ -343,37 +343,89 @@ impl LighterClient {
                     _ => return Err(TradingError::InvalidInput(format!("Invalid position sign: {}", position.sign))),
                 };
 
-                let price = self.get_market_price(&token, position_side_to_close).await?;
-                info!("#{} | Found open {} position to close: {}", self.wallet.id, position_side, position.symbol);
+                let mut last_err: Option<TradingError> = None;
+                let mut closed = false;
 
-                let base_amount = if position_side == PositionSide::Long {
-                    0
-                } else {
-                    self.calculate_base_amount(
-                        position.position_value.parse::<Decimal>()
-                        .unwrap_or(Decimal::ZERO), price)
-                        .await?
-                };
+                for attempt in 1..=3 {
+                    let price = match self.get_market_price(&token, position_side_to_close).await {
+                        Ok(p) => p,
+                        Err(e) => {
+                            error!(
+                                "#{} | Failed to fetch price for {} (attempt {}): {}. Trying again...",
+                                self.wallet.id, position.symbol, attempt, e
+                            );
+                            last_err = Some(e.into());
+                            sleep(Duration::from_millis(350)).await;
+                            continue;
+                        }
+                    };
 
+                    info!("#{} | Found open {} position to close: {} (attempt {})", self.wallet.id, position_side, position.symbol, attempt);
+                    let base_amount = (position.position
+                        .parse::<f64>()
+                        .map_err(|e| TradingError::InvalidInput(e.to_string()))? * 10000.0)
+                        .round() as u64;
 
-                let order = self.execute_market_order(&token, position_side_to_close, base_amount, price, true).await?;
-                self.get_order_by_hash(&order).await?;
+                    let order = match self
+                        .execute_market_order(&token, position_side_to_close, base_amount, price, true).await {
+                            Ok(o) => o,
+                            Err(e) => {
+                                error!(
+                                    "#{} | Failed to execute market order for {} (attempt {}): {}. Trying again...",
+                                    self.wallet.id, position.symbol, attempt, e
+                                );
 
-                info!("#{} | 🔴🔴 Position closed: {} | PnL: {} USDC", self.wallet.id, position.symbol, position.realized_pnl);
+                                last_err = Some(e.into());
+                                sleep(Duration::from_millis(350)).await;
+                                continue;
+                            }
+                    };
+
+                    match self.get_order_by_hash(&order).await {
+                        Ok(_) => {
+                            info!(
+                                "#{} | 🔴🔴 Position closed: {} | PnL: {} USDC",
+                                self.wallet.id, position.symbol, position.realized_pnl
+                            );
+
+                            closed = true;
+                            break;
+                        }
+                        Err(e) => {
+                            error!(
+                                "#{} | Failed to confirm close of position {} (attempt {}): {}. Trying again...",
+                                self.wallet.id, position.symbol, attempt, e
+                            );
+
+                            last_err = Some(e.into());
+                            sleep(Duration::from_millis(350)).await;
+                            continue;
+                        }
+                    }
+                }
+
+                if !closed {
+                    if let Some(e) = last_err {
+                        error!(
+                            "#{} | Position close ultimately failed for {} after 3 attempts. Last error: {}",
+                            self.wallet.id, position.symbol, e
+                        );
+                    }
+                }
             }
         }
 
         Ok(())
     }
 
-    async fn calculate_base_amount(&self, balance_usdc: Decimal, price: u64) -> Result<u64, TradingError> {
+    async fn calculate_base_amount(&self, amount_usdc: Decimal, price: u64) -> Result<u64, TradingError> {
         // Price is stored as integer with 2 decimal places (e.g., 387424 = 3874.24$)
         // Convert price to proper decimal format by dividing by 100
         let price_decimal = Decimal::from(price) / Decimal::from(100);
         
         // Calculate base amount: balance_usdc / price
         // This gives us the amount of base token we can buy
-        let base_amount = balance_usdc / price_decimal;
+        let base_amount = amount_usdc / price_decimal;
         
         // Convert to integer (base token amount is typically stored as integer)
         // For example: 10.0 USDC / 3874.24 = 0.00258... -> 0.00258 * 10000 = 25
@@ -456,7 +508,6 @@ impl LighterClient {
             )?;
 
             println!("Order signed: {:?}", order_signed);
-
             let tx_info_encoded = urlencoding::encode(&order_signed);
 
             let body = format!(

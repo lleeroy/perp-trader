@@ -59,6 +59,24 @@ impl TraderClient {
     }
 
 
+    pub async fn close_all_active_strategies(&self) -> Result<(), TradingError> {
+        let strategies = self.get_active_strategies().await?;
+
+        for strategy in strategies {
+            self.set_strategy_status(&strategy.id, StrategyStatus::Closing, None, None).await?;
+            match self.close_all_positions_on_lighter().await {
+                Ok(_) => {
+                    info!("✅ Strategy {} closed successfully", strategy.id);
+                    self.set_strategy_status(&strategy.id, StrategyStatus::Closed, Some(Utc::now()), None).await?;
+                }
+                Err(e) => {
+                    error!("❌ Failed to close all positions: {}", e);
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Monitor and close strategies when they reach their close_at time
     ///
     /// # Arguments
@@ -67,7 +85,7 @@ impl TraderClient {
     /// # Returns
     /// * `Ok(())` - All strategies were successfully closed
     /// * `Err(TradingError)` - If any error occurs during monitoring/closing
-    async fn monitor_and_close_strategies(
+    pub async fn monitor_and_close_strategies(
         &self,
         strategies: Vec<StrategyMetadata>,
     ) -> Result<(), TradingError> {
@@ -96,10 +114,12 @@ impl TraderClient {
 				let wait_duration = (earliest_close - now)
 					.to_std()
 					.unwrap_or(TokioDuration::from_secs(0));
+
 				info!(
 					"⏳ Waiting {} seconds until first strategy close time...",
 					wait_duration.as_secs()
 				);
+
 				self.wait_until(earliest_close).await;
 			}
 		}
@@ -131,62 +151,25 @@ impl TraderClient {
 				.set_strategy_status(&strategy.id, StrategyStatus::Closing, None, None)
 				.await?;
 
-            // Get all positions for this strategy
-            let all_position_ids = strategy.get_all_position_ids();
-            let mut closed_positions = Vec::new();
             let mut has_failures = false;
-
-            // Close each position in the strategy
-            for position_id in all_position_ids {
-                if let Some(position) = self.position_storage.get_position(&position_id).await? {
-					// Find the wallet for this position
-					let wallet = self
-						.find_wallet(position.wallet_id)
-						.map_err(|e| TradingError::InvalidInput(format!("{} for position {}", e, position.id)))?;
-
-                    // Create client and close position
-                    let client = BackpackClient::new(wallet);
-                    
-                    match client.close_position(&position).await {
-                        Ok(closed_position) => {
-                            // Update position in database
-                            self.position_storage.update_position_status(
-                                &closed_position.id,
-                                PositionStatus::Closed,
-                                closed_position.closed_at,
-                                closed_position.realized_pnl,
-                            ).await?;
-                            
-                            if let Some(pnl) = closed_position.realized_pnl {
-                                closed_positions.push((closed_position.id.clone(), pnl));
-                                info!("  ✅ Position {} closed | PnL: {:.2}", closed_position.id, pnl);
-                            } else {
-                                info!("  ✅ Position {} closed | PnL: N/A", closed_position.id);
-                            }
-                        }
-                        Err(e) => {
-                            error!("  ❌ Failed to close position {}: {}", position.id, e);
-                            has_failures = true;
-
-							// Mark position as failed but continue with other positions
-							self.mark_position_failed(&position.id).await?;
-                        }
-                    }
+            match self.close_all_positions_on_lighter().await {
+                Ok(_) => {
+                    info!("✅ All positions closed successfully");
+                }
+                Err(e) => {
+                    error!("❌ Failed to close all positions: {}", e);
+                    has_failures = true;
                 }
             }
-
-			// Calculate total PnL for the strategy
-			let total_pnl: Decimal = Self::sum_pnl(&closed_positions);
 
             // Update strategy status based on whether there were failures
 			let final_status = if has_failures { StrategyStatus::Failed } else { StrategyStatus::Closed };
 
 			self
-				.set_strategy_status(&strategy.id, final_status, Some(Utc::now()), Some(total_pnl))
+				.set_strategy_status(&strategy.id, final_status, Some(Utc::now()), None)
 				.await?;
 
-            info!("💰 Strategy {} completed | Status: {} | Total PnL: {:.2} USDC", 
-                strategy.id, final_status, total_pnl);
+            info!("💰 Strategy {} completed | Status: {}", strategy.id, final_status);
         }
 
         Ok(())
@@ -332,7 +315,7 @@ impl TraderClient {
         duration_hours: i64,
     ) -> Result<TradingStrategy, TradingError> {
         info!("🎯 Starting Lighter farming strategy with {} wallets", self.wallets.len());
-        
+
         // Handle conflicting strategies across our wallets (retry-after-close behavior)
         self.handle_conflicting_strategies().await?;
         info!("✅ No active strategies found for these wallets.");
@@ -347,12 +330,12 @@ impl TraderClient {
         let allocations = TradingStrategy::generate_balanced_allocations(&wallet_balances)?;
 
         // Step 3: Randomly select a token to trade
-        let selected_token = self.select_random_token()?;
+        let selected_token = Token::eth();
         let token_symbol = selected_token.symbol.to_string();
         info!("🎲 Selected token: {:?}", selected_token.symbol);
 
         // Step 4: Open positions for each allocation (in parallel)
-        let close_at = Utc::now() + Duration::hours(duration_hours);
+        let close_at = Utc::now() + Duration::minutes(duration_hours);
         info!("⏱️  Strategy duration: {} hours", duration_hours);
         
         // Create futures for all position openings
@@ -429,42 +412,20 @@ impl TraderClient {
                 .unwrap_or_else(|| TradingError::InvalidInput("Unknown error opening positions".to_string()));
 
             error!("❌ Position opening failed: {}", error);
-            
+
             if !opened_positions.is_empty() {
                 warn!(
                     "🔄 Rolling back {} successfully opened position(s)...",
                     opened_positions.len()
                 );
-
-                // Attempt to close all actually opened positions in parallel
-                let mut close_futures = Vec::new();
-                for (position, _side, wallet_id, client) in opened_positions {
-                    let pos_id = position.id.clone();
-                    let future = async move {
-                        match client.close_all_positions().await {
-                            Ok(_) => {
-                                info!("✅ Rolled back position {} from wallet #{}", pos_id, wallet_id);
-                                Ok(())
-                            }
-                            Err(e) => {
-                                error!("⚠️  Failed to rollback position {} from wallet #{}: {}", pos_id, wallet_id, e);
-                                Err(e)
-                            }
-                        }
-                    };
-                    close_futures.push(future);
-                }
-
-                let close_results = futures::future::join_all(close_futures).await;
-                let failed_rollbacks = close_results.iter().filter(|r| r.is_err()).count();
                 
-                if failed_rollbacks > 0 {
-                    error!(
-                        "⚠️  {} position(s) failed to rollback. Please close them manually.",
-                        failed_rollbacks
-                    );
-                } else {
-                    info!("✅ All positions rolled back successfully");
+                match self.close_all_positions_on_lighter().await {
+                    Ok(_) => {
+                        info!("✅ All positions rolled back successfully");
+                    }
+                    Err(e) => {
+                        error!("❌ Failed to roll back positions: {}", e);
+                    }
                 }
             } else {
                 warn!("No positions succeeded, nothing to roll back.");
@@ -573,6 +534,29 @@ impl TraderClient {
             .ok_or_else(|| TradingError::InvalidInput(format!("Backpack client for wallet #{} not found", wallet_id)))?
             .backpack_client
             .clone())
+    }
+
+    async fn close_all_positions_on_lighter(&self) -> Result<(), TradingError> {
+        let mut futures = Vec::new();
+        for wallet in &self.wallets {
+            let client = self.get_lighter_client(wallet.id)?;
+            
+            futures.push(async move {
+                client.close_all_positions().await
+            });
+        }
+
+        let results = futures::future::join_all(futures).await;
+        for result in results {
+            match result {
+                Ok(_) => {},
+                Err(e) => {
+                    error!("❌ Failed to close all positions on Lighter: {}", e);
+                }
+            }
+        }
+
+        Ok(())
     }
 
 	pub async fn fetch_wallet_balances_on_backpack(&self) -> Result<Vec<(u8, Decimal)>, TradingError> {
