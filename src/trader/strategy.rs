@@ -149,11 +149,14 @@ impl TradingStrategy {
     
     /// Generate balanced long/short allocations from wallet balances
     /// Ensures total long value ≈ total short value for market neutrality
+    /// Applies random leverage between 2x and 4x to each wallet allocation
     pub fn generate_balanced_allocations(
         wallet_balances: &Vec<(u8, Decimal)>,
     ) -> Result<Vec<WalletAllocation>, TradingError> {
         use rand::seq::SliceRandom;
         use rand::Rng;
+
+        let config = crate::config::AppConfig::load()?;
 
         if wallet_balances.len() < 3 {
             return Err(TradingError::InvalidInput(
@@ -184,29 +187,38 @@ impl TradingStrategy {
 
         // We'll use the minimum group total as the tradeable amount for both sides for neutrality
         let tradeable_amount = long_total_balance.min(short_total_balance);
-
         let mut allocations = Vec::new();
 
-        // Instead of always distributing fully by balance, generate random fractions to multiply
-        // each wallet's possible allocation within its group.
-        // This produces random allocation percentages per wallet (but doesn't exceed balance)
-        let mut random_factors: Vec<f64> = (0..wallet_balances.len()).map(|_| rng.gen_range(0.15..1.0)).collect();
+        // Generate random factors for each wallet
+        let mut random_factors: Vec<f64> = (0..wallet_balances.len())
+            .map(|_| rng.gen_range(0.15..1.0))
+            .collect();
+        
+        // Generate a single leverage factor that will be applied to BOTH sides for neutrality
+        let leverage = rng.gen_range(config.trading.min_leverage..=config.trading.max_leverage);
 
         // Generate random allocations for longs
         let mut long_side_randoms: Vec<f64> = long_indices.iter().map(|&i| random_factors[i]).collect();
         let long_side_sum: f64 = long_side_randoms.iter().sum();
         for (&idx, &rf) in long_indices.iter().zip(long_side_randoms.iter()) {
             let (wallet_id, balance) = wallet_balances[idx];
-            // assign this wallet a proportion of the SIDE's tradeable amount, proportional to random factor
+            
+            // Assign this wallet a proportion of the SIDE's tradeable amount, proportional to random factor
             let proportion = rf / long_side_sum;
-            let usdc_amount = Decimal::from_f64(tradeable_amount.to_string().parse::<f64>().unwrap() * proportion).unwrap();
-            // Don't allocate more than the wallet has
-            let usdc_amount = usdc_amount.min(balance);
+            let base_usdc_amount = Decimal::from_f64(tradeable_amount.to_string().parse::<f64>().unwrap() * proportion).unwrap();
+            
+            // Don't allocate more than the wallet has (before leverage)
+            let base_usdc_amount = base_usdc_amount.min(balance);
+            
+            // Apply leverage to get the position size
+            let usdc_amount = Decimal::from_f64(base_usdc_amount.to_string().parse::<f64>().unwrap() * leverage).unwrap();
+            
             let percentage = if balance > Decimal::ZERO {
-                (usdc_amount / balance) * Decimal::from(100)
+                (base_usdc_amount / balance) * Decimal::from(100)
             } else {
                 Decimal::ZERO
             };
+
             allocations.push(WalletAllocation {
                 wallet_id,
                 side: PositionSide::Long,
@@ -215,19 +227,25 @@ impl TradingStrategy {
             });
         }
 
-        // Same for shorts
+        // Same for shorts - use the SAME leverage factor
         let mut short_side_randoms: Vec<f64> = short_indices.iter().map(|&i| random_factors[i]).collect();
         let short_side_sum: f64 = short_side_randoms.iter().sum();
         for (&idx, &rf) in short_indices.iter().zip(short_side_randoms.iter()) {
             let (wallet_id, balance) = wallet_balances[idx];
+            
             let proportion = rf / short_side_sum;
-            let usdc_amount = Decimal::from_f64(tradeable_amount.to_string().parse::<f64>().unwrap() * proportion).unwrap();
-            let usdc_amount = usdc_amount.min(balance);
+            let base_usdc_amount = Decimal::from_f64(tradeable_amount.to_string().parse::<f64>().unwrap() * proportion).unwrap();
+            let base_usdc_amount = base_usdc_amount.min(balance);
+            
+            // Apply the SAME leverage to get the position size
+            let usdc_amount = Decimal::from_f64(base_usdc_amount.to_string().parse::<f64>().unwrap() * leverage).unwrap();
+            
             let percentage = if balance > Decimal::ZERO {
-                (usdc_amount / balance) * Decimal::from(100)
+                (base_usdc_amount / balance) * Decimal::from(100)
             } else {
                 Decimal::ZERO
             };
+            
             allocations.push(WalletAllocation {
                 wallet_id,
                 side: PositionSide::Short,
@@ -237,19 +255,19 @@ impl TradingStrategy {
         }
 
         // Log the allocation strategy
-        info!("Generated RANDOMIZED balanced allocation strategy:");
+        info!("Generated RANDOMIZED balanced allocation strategy with leverage ({:.1}x-{:.1}x):", config.trading.min_leverage, config.trading.max_leverage);
         let long_total: Decimal = allocations.iter()
             .filter(|a| a.side == PositionSide::Long)
             .map(|a| a.usdc_amount)
             .sum();
         let short_total: Decimal = allocations.iter()
-            .filter(|a| a.side == PositionSide::Short)
+            .filter(|a: &&WalletAllocation| a.side == PositionSide::Short)
             .map(|a| a.usdc_amount)
             .sum();
         
         for alloc in &allocations {
             info!(
-                "  Wallet #{}: {} {:.2}% ({:.2} USDC)",
+                "  Wallet #{}: {} {:.2}% ({:.2} USDC position size)",
                 alloc.wallet_id, alloc.side, alloc.percentage, alloc.usdc_amount
             );
         }
@@ -269,7 +287,7 @@ impl TradingStrategy {
     ) {
         println!("\nSTRATEGY PREVIEW\n");
         
-        println!("\n📍 Exchange: {}", exchange_name);
+        println!("📍 Exchange: {}", exchange_name);
         println!("🪙 Token: {}", token_symbol);
         println!("📅 Duration: {} minutes", duration_minutes);
         

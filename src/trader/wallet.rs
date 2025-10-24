@@ -13,6 +13,7 @@ pub struct Wallet {
     pub address: String,
     pub backpack_api_key: String,
     pub backpack_api_secret: String,
+    pub proxy: Option<String>,
 }
 
 
@@ -28,7 +29,7 @@ impl WalletTradingClient {
     pub async fn new(wallet: Wallet) -> Result<Self, TradingError> {
         let lighter_client = LighterClient::new(&wallet).await?;
         let backpack_client = BackpackClient::new(&wallet);
-        
+
         Ok(WalletTradingClient { wallet, lighter_client, backpack_client })
     }
 }
@@ -65,6 +66,17 @@ impl Wallet {
             .ok_or_else(|| TradingError::InvalidInput("Missing field address".into()))?
             .to_string();
 
+        let proxy = wallet_value.get("proxy")
+            .and_then(|v| v.as_str())
+            .map(|s| {
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.to_string())
+                }
+            })
+            .unwrap_or(None);
+
         let backpack_api_key = wallet_value.get("backpack_api_key")
             .and_then(|v| v.as_str())
             .ok_or_else(|| TradingError::InvalidInput("Missing field backpack_api_key".into()))?
@@ -87,6 +99,7 @@ impl Wallet {
 
         Ok(Wallet {
             id,
+            proxy,
             private_key: decrypted_private_key,
             address,
             backpack_api_key,

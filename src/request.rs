@@ -40,7 +40,25 @@ impl Request {
             .no_proxy();  // Disable system proxy detection to avoid macOS system-configuration issues
 
         if let Some(proxy) = proxy_url {
-            let proxy = Proxy::all(proxy).map_err(|e| RequestError::ConnectionError(e.to_string()))?;
+            // Proxy format must be a valid URI, e.g. http://user:pass@ip:port or http://ip:port
+            // If the proxy string is in the form "ip:port:user:pass", convert it to "http://user:pass@ip:port"
+            let formatted_proxy = {
+                let parts: Vec<_> = proxy.splitn(4, ':').collect();
+                if parts.len() == 4 {
+                    // Format as http://user:pass@ip:port
+                    let (ip, port, user, pass) = (parts[0], parts[1], parts[2], parts[3]);
+                    format!("http://{}:{}@{}:{}", user, pass, ip, port)
+                } else {
+                    // Try to use as http://{proxy}
+                    format!("http://{proxy}")
+                }
+            };
+
+            let proxy = Proxy::all(&formatted_proxy)
+                .map_err(|e| RequestError::ConnectionError(format!(
+                    "Proxy string '{}' (parsed as '{}') error: {}",
+                    proxy, formatted_proxy, e
+                )))?;
             client_builder = client_builder.proxy(proxy);
         }
 

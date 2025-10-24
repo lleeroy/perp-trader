@@ -16,7 +16,6 @@ use anyhow::{Result, Context};
 use inquire::{Select, Confirm};
 use rand::Rng;
 use crate::config::AppConfig;
-use crate::perp::PerpExchange;
 use crate::trader::client::TraderClient;
 use colored::*;
 use std::io::Write;
@@ -73,6 +72,17 @@ async fn main() -> Result<()> {
     .init();
 
     info!("🚀 Starting perp-trader application...");
+
+    // let wallet = trader::wallet::Wallet::load_from_json(1)?;
+    // let client = perp::lighter::client::LighterClient::new(&wallet).await?;
+    // let balance = perp::PerpExchange::get_usdc_balance(&client).await?;
+    // println!("Balance: {:.2} USDC", balance);
+    // let token = model::token::Token::bnb();
+    // let token_price = client.get_market_price(&token, model::PositionSide::Long).await?;
+    // println!("Token price: {:.2} USDC", token_price);
+    // let base_amount = client.calculate_base_amount(&token, balance, token_price).await?;
+    // println!("Base amount: {:.2}", base_amount);
+    // loop {};
 
     // Load configuration
     let config = AppConfig::load()?;

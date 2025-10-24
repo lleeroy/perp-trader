@@ -102,7 +102,7 @@ impl LighterClient {
             nonce_url, 
             None, 
             None, 
-            None
+            wallet.proxy.clone()
         ).await?;
         
         let nonce = nonce_response["nonce"].as_i64()
@@ -172,7 +172,7 @@ impl LighterClient {
             send_tx_url,
             Some(headers),
             Some(body),
-            None,
+            wallet.proxy.clone(),
         ).await?;
         
         // Step 9: Check response
@@ -193,7 +193,7 @@ impl LighterClient {
 
     async fn get_account(&self) -> Result<LighterAccount, TradingError> {
         let url = format!("{}/account?by=l1_address&value={}", self.base_url, self.wallet.address);
-        let response = Request::process_request(Method::GET, url, None, None, None).await?;
+        let response = Request::process_request(Method::GET, url, None, None, self.wallet.proxy.clone()).await?;
 
         match response["accounts"].as_array() {
             Some(accounts) => {
@@ -212,7 +212,7 @@ impl LighterClient {
 
     async fn get_account_index(base_url: &str, wallet: &Wallet) -> Result<u32, TradingError> {
         let url = format!("{}/accountsByL1Address?l1_address={}", base_url, wallet.address);
-        let response = Request::process_request(Method::GET, url, None, None, None).await?;
+        let response = Request::process_request(Method::GET, url, None, None, wallet.proxy.clone()).await?;
 
         match response["sub_accounts"][0]["index"].as_u64() {
             Some(index) => Ok(index as u32),
@@ -222,7 +222,7 @@ impl LighterClient {
 
     async fn get_nonce(&self) -> Result<i64, TradingError> {
         let url = format!("{}/nextNonce?account_index={}&api_key_index=0", self.base_url, self.account_index);
-        let response = Request::process_request(Method::GET, url, None, None, None).await?;
+        let response = Request::process_request(Method::GET, url, None, None, self.wallet.proxy.clone()).await?;
 
         match response["nonce"].as_i64() {
             Some(nonce) => Ok(nonce),
@@ -230,12 +230,13 @@ impl LighterClient {
         }
     }
 
-    async fn get_market_price(&self, token: &Token, side: PositionSide) -> Result<u64, TradingError> {
+    pub async fn get_market_price(&self, token: &Token, side: PositionSide) -> Result<u64, TradingError> {
         let end_timestamp = Utc::now().timestamp_millis();
         let start_timestamp = end_timestamp - 60000;
         let url = format!("{}/candlesticks?market_id={}&resolution=1m&start_timestamp={}&end_timestamp={}&count_back=5", self.base_url, token.get_market_index(Exchange::Lighter), start_timestamp, end_timestamp);
-        let response = Request::process_request(Method::GET, url, None, None, None).await?;
+        let response = Request::process_request(Method::GET, url, None, None, self.wallet.proxy.clone()).await?;
 
+        println!("Response: {:?}", response);
         match response["candlesticks"].as_array() {
             Some(candlesticks) => {
 
@@ -249,9 +250,10 @@ impl LighterClient {
                 let latest_candlestick = &candlesticks[candlesticks.len() - 1];
                 let price_f64 = latest_candlestick["close"].as_f64().unwrap();
 
+                println!("Price: {:.2}", price_f64);
                 let adjusted_price_f64 = match side {
-                    PositionSide::Short => price_f64 * 0.99,
-                    PositionSide::Long => price_f64 * 1.01,
+                    PositionSide::Short => price_f64 * 0.995,
+                    PositionSide::Long => price_f64 * 1.005,
                 };
 
                 let price = (adjusted_price_f64 * 100.0) as u64;
@@ -266,7 +268,7 @@ impl LighterClient {
         let mut last_err = None;
 
         for attempt in 1..=3 {
-            let response = match Request::process_request(Method::GET, url.clone(), None, None, None).await {
+            let response = match Request::process_request(Method::GET, url.clone(), None, None, self.wallet.proxy.clone()).await {
                 Ok(res) => res,
                 Err(e) => {
                     last_err = Some(TradingError::OrderExecutionFailed(format!("Attempt {attempt}: request error: {e}")));
@@ -439,19 +441,31 @@ impl LighterClient {
         Ok(())
     }
 
-    async fn calculate_base_amount(&self, amount_usdc: Decimal, price: u64) -> Result<u64, TradingError> {
-        // Price is stored as integer with 2 decimal places (e.g., 387424 = 3874.24$)
-        // Convert price to proper decimal format by dividing by 100
+    pub async fn calculate_base_amount(&self, _token: &Token, amount_usdc: Decimal, price: u64) -> Result<u64, TradingError> {
+        // Determine denomination automatically based on price scale
+        // Price is in integer with 2 decimal places; e.g. ETH: 399518, SOL: 19539
+        // Convention: If price > 100_000, multiply by 10_000 (e.g. ETH)
+        //             If price > 10_000, multiply by 1_000 (e.g. SOL)
+        //             If price > 1_000, multiply by 100 (expand rules as needed)
+
         let price_decimal = Decimal::from(price) / Decimal::from(100);
-        
-        // Calculate base amount: balance_usdc / price
-        // This gives us the amount of base token we can buy
+
+        // Calculate base amount in float
         let base_amount = amount_usdc / price_decimal;
-        
-        // Convert to integer (base token amount is typically stored as integer)
-        // For example: 10.0 USDC / 3874.24 = 0.00258... -> 0.00258 * 10000 = 25
-        let base_amount_scaled = base_amount * Decimal::from(10000);
-        
+
+        // Deduce denomination
+        let denomination: Decimal = if price >= 100_000 {
+            Decimal::from(10_000)
+        } else if price >= 10_000 {
+            Decimal::from(1_000)
+        } else if price >= 1_000 {
+            Decimal::from(100)
+        } else {
+            Decimal::ONE
+        };
+
+        let base_amount_scaled = base_amount * denomination;
+
         Ok(base_amount_scaled.round().to_string().parse::<u64>().unwrap())
     }
 
@@ -572,7 +586,7 @@ impl LighterClient {
             url, 
             Some(headers), 
             Some(body), 
-            None
+            self.wallet.proxy.clone()
         )
         .await;
 
@@ -699,7 +713,7 @@ impl PerpExchange for LighterClient {
         }
 
         let price = self.get_market_price(&token, side).await?;
-        let base_amount = self.calculate_base_amount(amount_usdc, price).await?;
+        let base_amount = self.calculate_base_amount(&token, amount_usdc, price).await?;
         let order_hash = self.execute_market_order(&token, side, base_amount, price, false).await?;
         info!("#{} | Order sent: {}", self.wallet.id, order_hash);        
         let tx = self.get_order_by_hash(&order_hash).await?;

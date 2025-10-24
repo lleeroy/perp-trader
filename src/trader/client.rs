@@ -61,6 +61,7 @@ impl TraderClient {
     }
 
 
+    #[allow(unused)]
     pub async fn close_all_active_strategies(&self) -> Result<(), TradingError> {
         let strategies = self.get_active_strategies().await?;
 
@@ -338,7 +339,7 @@ impl TraderClient {
         let allocations = TradingStrategy::generate_balanced_allocations(&wallet_balances)?;
 
         // Step 3: Randomly select a token to trade
-        let selected_token = Token::eth();
+        let selected_token = self.select_random_token()?;
         let token_symbol = selected_token.symbol.to_string();
         info!("🎲 Selected token: {:?}", selected_token.symbol);
 
@@ -497,6 +498,7 @@ impl TraderClient {
 		}
 	}
 
+    #[allow(unused)]
 	fn find_wallet(&self, wallet_id: u8) -> Result<&Wallet, TradingError> {
 		self.wallets
 			.iter()
@@ -504,6 +506,7 @@ impl TraderClient {
 			.ok_or_else(|| TradingError::InvalidInput(format!("Wallet #{} not found", wallet_id)))
 	}
 
+    #[allow(unused)]
 	async fn mark_position_failed(&self, position_id: &str) -> Result<(), TradingError> {
 		self
 			.position_storage
@@ -593,6 +596,7 @@ impl TraderClient {
 					wallet.id, balance
 				)));
 			}
+
 			balances.push((wallet.id, balance));
 		}
 		Ok(balances)
