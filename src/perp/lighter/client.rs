@@ -2,6 +2,7 @@ use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use reqwest::{header::HeaderMap, Method};
+use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use tokio::time::sleep;
 use urlencoding;
@@ -236,7 +237,7 @@ impl LighterClient {
         let url = format!("{}/candlesticks?market_id={}&resolution=1m&start_timestamp={}&end_timestamp={}&count_back=5", self.base_url, token.get_market_index(Exchange::Lighter), start_timestamp, end_timestamp);
         let response = Request::process_request(Method::GET, url, None, None, self.wallet.proxy.clone()).await?;
 
-        println!("Response: {:?}", response);
+
         match response["candlesticks"].as_array() {
             Some(candlesticks) => {
 
@@ -249,14 +250,21 @@ impl LighterClient {
 
                 let latest_candlestick = &candlesticks[candlesticks.len() - 1];
                 let price_f64 = latest_candlestick["close"].as_f64().unwrap();
+                let price_decimal = Decimal::from_f64(price_f64).unwrap();
 
-                println!("Price: {:.2}", price_f64);
-                let adjusted_price_f64 = match side {
-                    PositionSide::Short => price_f64 * 0.995,
-                    PositionSide::Long => price_f64 * 1.005,
+
+                let adjusted_price = match side {
+                    PositionSide::Short => price_decimal * Decimal::from_f64(0.99).unwrap(),
+                    PositionSide::Long => price_decimal * Decimal::from_f64(1.01).unwrap(),
                 };
 
-                let price = (adjusted_price_f64 * 100.0) as u64;
+                // Use token's price denomination to scale the price correctly
+                let price_denomination = Decimal::from_f64(token.get_price_denomination()).unwrap();
+                let scaled_price = adjusted_price * price_denomination;
+                
+                // Round to ensure we get a clean integer
+                let price = scaled_price.round().to_string().parse::<u64>().unwrap();
+
                 Ok(price)
             },
             None => return Err(TradingError::InvalidInput(format!("Candlesticks not found in response: {:?}", response))),
@@ -361,11 +369,29 @@ impl LighterClient {
                         }
                     };
 
-                    info!("#{} | Found open {} position to close: {} (attempt {})", self.wallet.id, position_side, position.symbol, attempt);
-                    let base_amount = (position.position
-                        .parse::<f64>()
-                        .map_err(|e| TradingError::InvalidInput(e.to_string()))? * 10000.0)
-                        .round() as u64;
+                    info!("#{} | found open {} position to close: {} (attempt {})", self.wallet.id, position_side, position.symbol, attempt);
+                    let position_size: f64 = position.position.parse::<f64>().unwrap();
+
+                    // Converts fractional position sizes to whole-number base amounts by shifting the decimal to the right as needed:
+                    // 0.1           -> 1
+                    // 0.0065        -> 65
+                    // 0.000000001   -> 1
+                    // This logic multiplies the position_size by 10 repeatedly until its fractional part is essentially gone,
+                    // preserving up to all significant digits. It does NOT round the result, it truncates.
+                    let base_amount = {
+                        let mut base = position_size;
+                        let mut digits = 0u32;
+                        // Move decimal right until we have a non-fractional number or until limit to avoid infinite loops with tiny values
+                        while base.fract() != 0.0 && digits < 18 {
+                            base *= 10.0;
+                            digits += 1;
+                        }
+                        base.trunc() as u64
+                    };
+
+                    info!("#{} | <{}> position size: {}", self.wallet.id, position.symbol, position_size);
+                    info!("#{} | <{}> base amount: {}", self.wallet.id, position.symbol, base_amount);
+
 
                     let order = match self
                         .execute_market_order(&token, position_side_to_close, base_amount, price, true).await {
@@ -441,32 +467,15 @@ impl LighterClient {
         Ok(())
     }
 
-    pub async fn calculate_base_amount(&self, _token: &Token, amount_usdc: Decimal, price: u64) -> Result<u64, TradingError> {
-        // Determine denomination automatically based on price scale
-        // Price is in integer with 2 decimal places; e.g. ETH: 399518, SOL: 19539
-        // Convention: If price > 100_000, multiply by 10_000 (e.g. ETH)
-        //             If price > 10_000, multiply by 1_000 (e.g. SOL)
-        //             If price > 1_000, multiply by 100 (expand rules as needed)
-
-        let price_decimal = Decimal::from(price) / Decimal::from(100);
-
-        // Calculate base amount in float
+    pub async fn calculate_base_amount(&self, token: &Token, amount_usdc: Decimal, price: u64) -> Result<u64, TradingError> {
+        // Price is scaled by 10,000, so divide it
+        let price_decimal = Decimal::from(price) / Decimal::from(10_000);
+    
+        // Calculate base amount
         let base_amount = amount_usdc / price_decimal;
-
-        // Deduce denomination
-        let denomination: Decimal = if price >= 100_000 {
-            Decimal::from(10_000)
-        } else if price >= 10_000 {
-            Decimal::from(1_000)
-        } else if price >= 1_000 {
-            Decimal::from(100)
-        } else {
-            Decimal::ONE
-        };
-
-        let base_amount_scaled = base_amount * denomination;
-
-        Ok(base_amount_scaled.round().to_string().parse::<u64>().unwrap())
+        let base_amount_scaled = base_amount * token.get_denomination();    
+        let base_rounded = base_amount_scaled.round().to_string().parse::<u64>().unwrap();
+        Ok(base_rounded)
     }
 
     #[allow(unused)]
@@ -507,7 +516,7 @@ impl LighterClient {
     ) -> Result<String, TradingError> {
         let market_index = token.get_market_index(Exchange::Lighter);
         let is_ask = matches!(side, PositionSide::Short);
-        let reduce_only = matches!(side, PositionSide::Short) && close_position;
+        let reduce_only = matches!(close_position, true);
         let mut last_nonce_error: Option<String> = None;
 
         for attempt in 0..2 {
@@ -542,6 +551,7 @@ impl LighterClient {
                 order.tx_info.nonce,
             )?;
 
+            info!("#{} | Order signed: {}", self.wallet.id, order_signed);
             let tx_info_encoded = urlencoding::encode(&order_signed);
 
             let body = format!(

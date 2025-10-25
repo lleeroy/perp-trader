@@ -16,6 +16,7 @@ use anyhow::{Result, Context};
 use inquire::{Select, Confirm};
 use rand::Rng;
 use crate::config::AppConfig;
+use crate::perp::PerpExchange;
 use crate::trader::client::TraderClient;
 use colored::*;
 use std::io::Write;
@@ -73,15 +74,24 @@ async fn main() -> Result<()> {
 
     info!("🚀 Starting perp-trader application...");
 
-    // let wallet = trader::wallet::Wallet::load_from_json(1)?;
+    // let wallet = trader::wallet::Wallet::load_from_json(3)?;
     // let client = perp::lighter::client::LighterClient::new(&wallet).await?;
-    // let balance = perp::PerpExchange::get_usdc_balance(&client).await?;
-    // println!("Balance: {:.2} USDC", balance);
+
     // let token = model::token::Token::bnb();
-    // let token_price = client.get_market_price(&token, model::PositionSide::Long).await?;
-    // println!("Token price: {:.2} USDC", token_price);
-    // let base_amount = client.calculate_base_amount(&token, balance, token_price).await?;
-    // println!("Base amount: {:.2}", base_amount);
+    // let side = model::PositionSide::Long;
+    // let close_at = chrono::Utc::now() + chrono::Duration::minutes(1);
+    // let amount_usdc = rust_decimal::Decimal::from(10);
+    // client.open_position(token, side, close_at, amount_usdc).await?;
+    // client.close_all_positions().await?;
+
+    // loop {};
+
+    // for token in model::token::Token::get_supported_tokens() {
+    //     let token_price = client.get_market_price(&token, model::PositionSide::Long).await?;
+    //     println!("{} price: {:.2} USDC", token.get_symbol_string(model::Exchange::Lighter), token_price);
+    //     let base_amount = client.calculate_base_amount(&token, amount_usdc, token_price).await?;
+    //     println!("{} base amount: {:.2}", token.get_symbol_string(model::Exchange::Lighter), base_amount);
+    // }
     // loop {};
 
     // Load configuration

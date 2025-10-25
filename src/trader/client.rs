@@ -339,7 +339,7 @@ impl TraderClient {
         let allocations = TradingStrategy::generate_balanced_allocations(&wallet_balances)?;
 
         // Step 3: Randomly select a token to trade
-        let selected_token = self.select_random_token()?;
+        let selected_token = Token::bnb();
         let token_symbol = selected_token.symbol.to_string();
         info!("🎲 Selected token: {:?}", selected_token.symbol);
 

@@ -1,3 +1,5 @@
+use rust_decimal::Decimal;
+
 use crate::model::Exchange;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -14,7 +16,6 @@ pub enum SupportedToken {
     XRP,
     AAVE,
     ENA,
-    PUMP
 }
 
 impl std::fmt::Display for SupportedToken {
@@ -27,7 +28,6 @@ impl std::fmt::Display for SupportedToken {
             SupportedToken::XRP => write!(f, "XRP"),
             SupportedToken::AAVE => write!(f, "AAVE"),
             SupportedToken::ENA => write!(f, "ENA"),
-            SupportedToken::PUMP => write!(f, "PUMP"),
         }
     }
 }
@@ -43,7 +43,6 @@ impl Token {
                 25 => Self::bnb(),
                 27 => Self::aave(),
                 29 => Self::ena(),
-                45 => Self::pump(),
                 _ => panic!("Invalid market index: {}", market_index),
             },
         }
@@ -81,12 +80,37 @@ impl Token {
         Token::new(SupportedToken::ENA)
     }
 
-    pub fn pump() -> Token {
-        Token::new(SupportedToken::PUMP)
+    pub fn get_supported_tokens() -> Vec<Token> {
+        vec![Self::eth(), Self::sol(), Self::bnb()]
     }
 
-    pub fn get_supported_tokens() -> Vec<Token> {
-        vec![Self::eth(), Self::sol(), Self::hype(), Self::bnb(), Self::xrp(), Self::aave(), Self::ena(), Self::pump()]
+    /// Returns the price denomination (how much to multiply the price by)
+    pub fn get_price_denomination(&self) -> f64 {
+        match self.symbol {
+            SupportedToken::ETH => 100.0,         // 6 digits total
+            SupportedToken::SOL => 1_000.0,      // 7 digits total
+            SupportedToken::BNB => 10_000.0,      // 8 digits total
+            SupportedToken::HYPE => 10_000.0,
+            SupportedToken::XRP => 10_000.0,
+            SupportedToken::AAVE => 10_000.0,
+            SupportedToken::ENA => 10_000.0,
+            _ => 1.0,
+        }
+    }
+
+    /// Returns the denomination multiplier for base amount calculation
+    /// This is specific to how each token is represented on the exchange
+    pub fn get_denomination(&self) -> Decimal {
+        match self.symbol {
+            SupportedToken::ETH => Decimal::from(100),   // was 100_000
+            SupportedToken::BNB => Decimal::from(100),      // was 10_000
+            SupportedToken::SOL => Decimal::from(100),    // correct
+            SupportedToken::HYPE => Decimal::from(100),
+            SupportedToken::XRP => Decimal::from(100),
+            SupportedToken::AAVE => Decimal::from(100),
+            SupportedToken::ENA => Decimal::from(100),
+            _ => Decimal::from(1),
+        } 
     }
 
     pub fn get_symbol_string(&self, exchange: Exchange) -> String {
@@ -118,10 +142,6 @@ impl Token {
             SupportedToken::ENA => match exchange {
                 Exchange::Lighter => "ENA_USDC_PERP".to_string(),
                 Exchange::Backpack => "ENA_USDC_PERP".to_string(),
-            },
-            SupportedToken::PUMP => match exchange {
-                Exchange::Lighter => "PUMP_USDC_PERP".to_string(),
-                Exchange::Backpack => "PUMP_USDC_PERP".to_string(),
             },
         }
     }
@@ -155,10 +175,6 @@ impl Token {
             SupportedToken::ENA => match exchange {
                 Exchange::Lighter => 29,
                 Exchange::Backpack => 29,
-            },
-            SupportedToken::PUMP => match exchange {
-                Exchange::Lighter => 45,
-                Exchange::Backpack => 45,
             },
         }
     }
