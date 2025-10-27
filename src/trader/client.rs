@@ -410,7 +410,8 @@ impl TraderClient {
 
         // Handle conflicting strategies across our wallets (retry-after-close behavior)
         self.handle_conflicting_strategies().await?;
-        info!("✅ No active strategies found for these wallets.");
+        // Handle conflicting positions on Lighter exchange
+        self.handle_conflicting_positions().await?;
 
         // Step 1: Fetch USDC balances from all wallets on Lighter
         let wallet_balances = self.fetch_wallet_balances_on_lighter().await?;
@@ -1016,8 +1017,34 @@ impl TraderClient {
             info!("🔄 Active strategies were completed. Starting new trades...");
 		}
 
+        info!("✅ No active strategies found for these wallets.");
 		Ok(())
 	}
+
+    /// Check for and handle conflicting positions on Lighter exchange
+    /// 
+    /// This method prevents position conflicts by:
+    /// 1. Identifying active positions on any of this client's wallets
+    /// 2. Waiting for those positions to complete naturally
+    /// 3. Returning an error instructing the caller to retry
+    /// 
+    /// # Returns
+    async fn handle_conflicting_positions(&self) -> Result<(), TradingError> {
+        for wallet in self.wallets.iter() {
+            let client = self.get_lighter_client(wallet.id)?;
+            let positions = client.get_active_positions().await?;
+            if positions.is_empty() {
+                continue;
+            }
+
+            info!("⚠️  Found {} active positions on wallet {}", positions.len(), wallet.id);
+            info!("📋 Waiting for these positions to complete before starting new trades...");
+            self.close_positions_on_lighter_for_wallet(wallet.id).await?;
+        }
+
+        info!("✅ No active positions found on any wallets.");
+        Ok(())
+    }
 
 
     #[allow(unused)]

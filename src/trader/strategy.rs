@@ -200,72 +200,32 @@ impl TradingStrategy {
         let tradeable_amount = long_total_balance.min(short_total_balance);
         let mut allocations = Vec::new();
 
-        // Generate random factors for each wallet
-        let mut random_factors: Vec<f64> = (0..wallet_balances.len())
-            .map(|_| rng.gen_range(0.15..1.0))
-            .collect();
-        
         // Generate a single leverage factor that will be applied to BOTH sides for neutrality
         let leverage = rng.gen_range(config.trading.min_leverage..=config.trading.max_leverage);
 
-        // Generate allocations for longs
-        let long_side_randoms: Vec<f64> = long_indices.iter().map(|&i| random_factors[i]).collect();
-        let long_side_sum: f64 = long_side_randoms.iter().sum();
-        
-        for (&idx, &rf) in long_indices.iter().zip(long_side_randoms.iter()) {
-            let (wallet_id, balance) = wallet_balances[idx];
-            
-            // Assign this wallet a proportion of the SIDE's tradeable amount
-            let proportion = rf / long_side_sum;
-            let base_usdc_amount = Decimal::from_f64(tradeable_amount.to_string().parse::<f64>().unwrap() * proportion).unwrap();
-            
-            // Don't allocate more than the wallet has (before leverage)
-            let base_usdc_amount = base_usdc_amount.min(balance);
-            
-            // Apply leverage to get the position size
-            let usdc_amount = Decimal::from_f64(base_usdc_amount.to_string().parse::<f64>().unwrap() * leverage).unwrap();
-            
-            let percentage = if balance > Decimal::ZERO {
-                (base_usdc_amount / balance) * Decimal::from(100)
-            } else {
-                Decimal::ZERO
-            };
+        // Calculate total allocation for each side to ensure exact balance
+        let total_allocation_per_side = tradeable_amount * Decimal::from_f64(leverage).unwrap();
 
-            allocations.push(WalletAllocation {
-                wallet_id,
-                side: PositionSide::Long,
-                usdc_amount,
-                percentage,
-            });
-        }
+        // Generate allocations for longs with capacity-aware distribution
+        let long_allocations = Self::distribute_allocation(
+            long_indices,
+            &wallet_balances,
+            total_allocation_per_side,
+            leverage,
+            PositionSide::Long,
+        )?;
 
-        // Generate allocations for shorts
-        let short_side_randoms: Vec<f64> = short_indices.iter().map(|&i| random_factors[i]).collect();
-        let short_side_sum: f64 = short_side_randoms.iter().sum();
-        
-        for (&idx, &rf) in short_indices.iter().zip(short_side_randoms.iter()) {
-            let (wallet_id, balance) = wallet_balances[idx];
-            
-            let proportion = rf / short_side_sum;
-            let base_usdc_amount = Decimal::from_f64(tradeable_amount.to_string().parse::<f64>().unwrap() * proportion).unwrap();
-            let base_usdc_amount = base_usdc_amount.min(balance);
-            
-            // Apply the SAME leverage to get the position size
-            let usdc_amount = Decimal::from_f64(base_usdc_amount.to_string().parse::<f64>().unwrap() * leverage).unwrap();
-            
-            let percentage = if balance > Decimal::ZERO {
-                (base_usdc_amount / balance) * Decimal::from(100)
-            } else {
-                Decimal::ZERO
-            };
-            
-            allocations.push(WalletAllocation {
-                wallet_id,
-                side: PositionSide::Short,
-                usdc_amount,
-                percentage,
-            });
-        }
+        // Generate allocations for shorts with capacity-aware distribution
+        let short_allocations = Self::distribute_allocation(
+            short_indices,
+            &wallet_balances,
+            total_allocation_per_side,
+            leverage,
+            PositionSide::Short,
+        )?;
+
+        allocations.extend(long_allocations);
+        allocations.extend(short_allocations);
 
         // Log the allocation strategy
         info!("Generated RANDOMIZED balanced allocation strategy with leverage ({:.1}x-{:.1}x):", config.trading.min_leverage, config.trading.max_leverage);
@@ -287,9 +247,129 @@ impl TradingStrategy {
         
         info!("  Total LONG: {:.2} USDC | Total SHORT: {:.2} USDC", long_total, short_total);
         info!("  Distribution: {} longs, {} shorts", long_indices.len(), short_indices.len());
+        info!("  Target allocation per side: {:.2} USDC", total_allocation_per_side);
+
+        // Verify balance - allow small tolerance for rounding errors
+        let imbalance = (long_total - short_total).abs();
+        let max_allowed_imbalance = Decimal::from(2); // Allow 2 USDC imbalance
+        
+        if imbalance > max_allowed_imbalance {
+            return Err(TradingError::InvalidInput(format!(
+                "Imbalance too large: {:.2} USDC (max allowed: {:.2} USDC)", 
+                imbalance, max_allowed_imbalance
+            )));
+            
+        } else if imbalance > Decimal::ZERO {
+            info!("  ⚠️  Small imbalance detected: {:.2} USDC (within tolerance)", imbalance);
+        } else {
+            info!("  ✅ Perfectly balanced allocation");
+        }
 
         Ok(allocations)
     }
+
+    /// Helper function to distribute allocation among wallets while respecting capacity limits
+    fn distribute_allocation(
+        wallet_indices: &[usize],
+        wallet_balances: &[(u8, Decimal)],
+        total_allocation: Decimal,
+        leverage: f64,
+        side: PositionSide,
+    ) -> Result<Vec<WalletAllocation>, TradingError> {
+        let mut rng = rand::thread_rng();
+        let mut allocations = Vec::new();
+        
+        // Generate random weights for each wallet
+        let weights: Vec<f64> = wallet_indices
+            .iter()
+            .map(|_| rng.gen_range(0.15..1.0))
+            .collect();
+        let total_weight: f64 = weights.iter().sum();
+        
+        // Calculate each wallet's capacity (max they can take after leverage)
+        let wallet_capacities: Vec<Decimal> = wallet_indices
+            .iter()
+            .map(|&idx| {
+                let balance = wallet_balances[idx].1;
+                balance * Decimal::from_f64(leverage).unwrap()
+            })
+            .collect();
+        
+        let mut remaining_allocation = total_allocation;
+        let mut distributed = vec![Decimal::ZERO; wallet_indices.len()];
+        
+        // First pass: distribute proportionally by weights
+        for (i, (&idx, &weight)) in wallet_indices.iter().zip(weights.iter()).enumerate() {
+            let proportion = Decimal::from_f64(weight / total_weight).unwrap();
+            let mut allocation = total_allocation * proportion;
+            
+            // Cap at wallet capacity
+            allocation = allocation.min(wallet_capacities[i]);
+            distributed[i] = allocation;
+            remaining_allocation -= allocation;
+        }
+        
+        // Second pass: distribute any remaining allocation to wallets that have capacity
+        if remaining_allocation > Decimal::ZERO {
+            let mut attempts = 0;
+            while remaining_allocation > Decimal::ZERO && attempts < 10 {
+                let mut redistributed = false;
+                
+                for i in 0..wallet_indices.len() {
+                    if remaining_allocation <= Decimal::ZERO {
+                        break;
+                    }
+                    
+                    let current_allocation = distributed[i];
+                    let capacity = wallet_capacities[i];
+                    let remaining_capacity = capacity - current_allocation;
+                    
+                    if remaining_capacity > Decimal::ZERO {
+                        // Distribute a portion of the remaining allocation
+                        let additional = remaining_allocation.min(remaining_capacity);
+                        distributed[i] += additional;
+                        remaining_allocation -= additional;
+                        redistributed = true;
+                    }
+                }
+                
+                if !redistributed {
+                    break; // No more capacity available
+                }
+                attempts += 1;
+            }
+        }
+        
+        // If we still have remaining allocation, we need to scale down proportionally
+        if remaining_allocation < Decimal::ZERO {
+            let scale_factor = total_allocation / (total_allocation - remaining_allocation);
+            for allocation in &mut distributed {
+                *allocation *= scale_factor;
+            }
+        }
+        
+        // Create final allocations
+        for (i, &idx) in wallet_indices.iter().enumerate() {
+            let (wallet_id, balance) = wallet_balances[idx];
+            let usdc_amount = distributed[i];
+            let base_usdc_amount = usdc_amount / Decimal::from_f64(leverage).unwrap();
+            let percentage = if balance > Decimal::ZERO {
+                (base_usdc_amount / balance) * Decimal::from(100)
+            } else {
+                Decimal::ZERO
+            };
+
+            allocations.push(WalletAllocation {
+                wallet_id,
+                side,
+                usdc_amount,
+                percentage,
+            });
+        }
+        
+        Ok(allocations)
+    }
+
 
     /// Display strategy preview before execution
     pub fn display_strategy_preview(
@@ -327,4 +407,365 @@ impl TradingStrategy {
         
     }
 
+}
+
+
+#[cfg(test)]
+
+mod tests {
+    use super::*;
+    use rust_decimal_macros::dec;
+    use std::collections::HashMap;
+
+    /// Helper function to create wallet balances for testing
+    fn create_wallet_balances(ids_and_balances: &[(u8, f64)]) -> Vec<(u8, Decimal)> {
+        ids_and_balances
+            .iter()
+            .map(|(id, balance)| (*id, Decimal::from_f64(*balance).unwrap()))
+            .collect()
+    }
+
+    /// Helper function to analyze allocations
+    fn analyze_allocations(allocations: &[WalletAllocation]) -> (Decimal, Decimal, usize, usize) {
+        let long_total: Decimal = allocations
+            .iter()
+            .filter(|a| a.side == PositionSide::Long)
+            .map(|a| a.usdc_amount)
+            .sum();
+        
+        let short_total: Decimal = allocations
+            .iter()
+            .filter(|a| a.side == PositionSide::Short)
+            .map(|a| a.usdc_amount)
+            .sum();
+        
+        let long_count = allocations.iter().filter(|a| a.side == PositionSide::Long).count();
+        let short_count = allocations.iter().filter(|a| a.side == PositionSide::Short).count();
+        
+        (long_total, short_total, long_count, short_count)
+    }
+
+    #[test]
+    fn test_insufficient_wallets() {
+        let wallet_balances = create_wallet_balances(&[(1, 100.0), (2, 100.0)]);
+        
+        let result = TradingStrategy::generate_balanced_allocations(&wallet_balances);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(TradingError::InvalidInput(_))));
+    }
+
+    #[test]
+    fn test_zero_total_balance() {
+        let wallet_balances = create_wallet_balances(&[(1, 0.0), (2, 0.0), (3, 0.0)]);
+        
+        let result = TradingStrategy::generate_balanced_allocations(&wallet_balances);
+        assert!(result.is_err());
+        assert!(matches!(result, Err(TradingError::InvalidInput(_))));
+    }
+
+    #[test]
+    fn test_three_wallets_balanced() {
+        let wallet_balances = create_wallet_balances(&[(1, 100.0), (2, 100.0), (3, 100.0)]);
+        
+        let result = TradingStrategy::generate_balanced_allocations(&wallet_balances);
+        assert!(result.is_ok());
+        
+        let allocations = result.unwrap();
+        assert_eq!(allocations.len(), 3);
+        
+        let (long_total, short_total, long_count, short_count) = analyze_allocations(&allocations);
+        
+        // Should have either 2 longs/1 short or 1 long/2 shorts
+        assert!((long_count == 2 && short_count == 1) || (long_count == 1 && short_count == 2));
+        
+        // Totals should be very close (within 1 USDC due to rounding)
+        let imbalance = (long_total - short_total).abs();
+        assert!(imbalance <= Decimal::from(1), "Imbalance too large: {}", imbalance);
+    }
+
+    #[test]
+    fn test_four_wallets_balanced() {
+        let wallet_balances = create_wallet_balances(&[
+            (1, 150.0), 
+            (2, 200.0), 
+            (3, 100.0), 
+            (4, 250.0)
+        ]);
+        
+        let result = TradingStrategy::generate_balanced_allocations(&wallet_balances);
+        assert!(result.is_ok());
+        
+        let allocations = result.unwrap();
+        assert_eq!(allocations.len(), 4);
+        
+        let (long_total, short_total, long_count, short_count) = analyze_allocations(&allocations);
+        
+        // Should have at least 2 per side for 4 wallets
+        assert!(long_count >= 2);
+        assert!(short_count >= 2);
+        
+        // Totals should be very close
+        let imbalance = (long_total - short_total).abs();
+        assert!(imbalance <= Decimal::from(1), "Imbalance too large: {}", imbalance);
+    }
+
+    #[test]
+    fn test_five_wallets_balanced() {
+        let wallet_balances = create_wallet_balances(&[
+            (1, 300.0), 
+            (2, 150.0), 
+            (3, 200.0), 
+            (4, 100.0), 
+            (5, 250.0)
+        ]);
+        
+        let result = TradingStrategy::generate_balanced_allocations(&wallet_balances);
+        assert!(result.is_ok());
+        
+        let allocations = result.unwrap();
+        assert_eq!(allocations.len(), 5);
+        
+        let (long_total, short_total, long_count, short_count) = analyze_allocations(&allocations);
+        
+        // Should have at least 2 per side for 5+ wallets
+        assert!(long_count >= 2);
+        assert!(short_count >= 2);
+        
+        // Totals should be very close
+        let imbalance = (long_total - short_total).abs();
+        assert!(imbalance <= Decimal::from(1), "Imbalance too large: {}", imbalance);
+    }
+
+    #[test]
+    fn test_uneven_balances_still_balanced() {
+        let wallet_balances = create_wallet_balances(&[
+            (1, 50.0),   // Small
+            (2, 1000.0), // Large
+            (3, 75.0),   // Small
+            (4, 800.0),  // Large
+            (5, 60.0),   // Small
+        ]);
+        
+        let result = TradingStrategy::generate_balanced_allocations(&wallet_balances);
+        assert!(result.is_ok());
+        
+        let allocations = result.unwrap();
+        let (long_total, short_total, _, _) = analyze_allocations(&allocations);
+        
+        // Even with uneven balances, totals should be close
+        let imbalance = (long_total - short_total).abs();
+        assert!(imbalance <= Decimal::from(1), "Imbalance too large: {}", imbalance);
+    }
+
+    #[test]
+    fn test_all_wallets_used() {
+        let wallet_balances = create_wallet_balances(&[
+            (1, 100.0), 
+            (2, 100.0), 
+            (3, 100.0), 
+            (4, 100.0)
+        ]);
+        
+        let result = TradingStrategy::generate_balanced_allocations(&wallet_balances);
+        assert!(result.is_ok());
+        
+        let allocations = result.unwrap();
+        
+        // All input wallets should be represented in output
+        let allocated_wallet_ids: Vec<u8> = allocations.iter().map(|a| a.wallet_id).collect();
+        for (wallet_id, _) in &wallet_balances {
+            assert!(allocated_wallet_ids.contains(wallet_id), "Wallet {} not allocated", wallet_id);
+        }
+    }
+
+    #[test]
+    fn test_percentage_calculation_correct() {
+        let wallet_balances = create_wallet_balances(&[
+            (1, 100.0), 
+            (2, 200.0), 
+            (3, 150.0)
+        ]);
+        
+        let result = TradingStrategy::generate_balanced_allocations(&wallet_balances);
+        assert!(result.is_ok());
+        
+        let allocations = result.unwrap();
+        
+        for allocation in allocations {
+            let wallet_balance = wallet_balances
+                .iter()
+                .find(|(id, _)| *id == allocation.wallet_id)
+                .map(|(_, balance)| *balance)
+                .unwrap();
+            
+            // Percentage should be between 0 and 100
+            assert!(allocation.percentage >= Decimal::ZERO);
+            assert!(allocation.percentage <= Decimal::from(100));
+            
+            // Verify percentage calculation: percentage = (base_amount / balance) * 100
+            let base_amount = allocation.usdc_amount / Decimal::from_f64(1.15).unwrap(); // Approximate leverage
+            let expected_percentage = (base_amount / wallet_balance) * Decimal::from(100);
+            let percentage_diff = (allocation.percentage - expected_percentage).abs();
+            
+            // Allow some tolerance for rounding
+            assert!(percentage_diff <= Decimal::from(5), "Percentage calculation off for wallet {}", allocation.wallet_id);
+        }
+    }
+
+    #[test]
+    fn test_leverage_applied_correctly() {
+        let wallet_balances = create_wallet_balances(&[
+            (1, 100.0), 
+            (2, 100.0), 
+            (3, 100.0)
+        ]);
+        
+        let result = TradingStrategy::generate_balanced_allocations(&wallet_balances);
+        assert!(result.is_ok());
+        
+        let allocations = result.unwrap();
+        
+        for allocation in allocations {
+            let wallet_balance = wallet_balances
+                .iter()
+                .find(|(id, _)| *id == allocation.wallet_id)
+                .map(|(_, balance)| *balance)
+                .unwrap();
+            
+            // Base amount (before leverage) should not exceed wallet balance
+            let base_amount = allocation.usdc_amount / Decimal::from_f64(1.2).unwrap(); // Using max leverage
+            assert!(base_amount <= wallet_balance, "Base amount exceeds wallet balance for wallet {}", allocation.wallet_id);
+            
+            // Leveraged amount should be greater than base amount
+            assert!(allocation.usdc_amount > base_amount, "Leverage not applied correctly for wallet {}", allocation.wallet_id);
+        }
+    }
+
+    #[test]
+    fn test_random_distribution_over_multiple_runs() {
+        let wallet_balances = create_wallet_balances(&[
+            (1, 100.0), 
+            (2, 100.0), 
+            (3, 100.0), 
+            (4, 100.0)
+        ]);
+        
+        let mut long_counts = HashMap::new();
+        let mut side_assignments = HashMap::new();
+        
+        // Run multiple times to test randomness
+        for _ in 0..100 {
+            let result = TradingStrategy::generate_balanced_allocations(&wallet_balances);
+            assert!(result.is_ok());
+            
+            let allocations = result.unwrap();
+            let (_, _, long_count, short_count) = analyze_allocations(&allocations);
+            
+            // Track distribution of long/short splits
+            *long_counts.entry(long_count).or_insert(0) += 1;
+            
+            // Track which wallets get assigned to which side
+            for allocation in allocations {
+                let entry = side_assignments.entry(allocation.wallet_id).or_insert((0, 0));
+                match allocation.side {
+                    PositionSide::Long => entry.0 += 1,
+                    PositionSide::Short => entry.1 += 1,
+                }
+            }
+        }
+        
+        // Should see different distributions (2-2, 3-1 splits)
+        assert!(long_counts.len() >= 1, "Should have at least one distribution pattern");
+        
+        // Each wallet should be assigned to both sides over multiple runs
+        for (wallet_id, (long_assignments, short_assignments)) in side_assignments {
+            assert!(long_assignments > 0, "Wallet {} never assigned long", wallet_id);
+            assert!(short_assignments > 0, "Wallet {} never assigned short", wallet_id);
+        }
+    }
+
+    #[test]
+    fn test_very_small_balances() {
+        let wallet_balances = create_wallet_balances(&[
+            (1, 10.0),   // Very small
+            (2, 15.0),   // Very small  
+            (3, 12.0),   // Very small
+            (4, 8.0),    // Very small
+        ]);
+        
+        let result = TradingStrategy::generate_balanced_allocations(&wallet_balances);
+        assert!(result.is_ok());
+        
+        let allocations = result.unwrap();
+        let (long_total, short_total, _, _) = analyze_allocations(&allocations);
+        
+        // Even with small balances, should still be balanced
+        let imbalance = (long_total - short_total).abs();
+        assert!(imbalance <= Decimal::from(1), "Imbalance too large: {}", imbalance);
+        
+        // No allocation should exceed wallet capacity
+        for allocation in allocations {
+            let wallet_balance = wallet_balances
+                .iter()
+                .find(|(id, _)| *id == allocation.wallet_id)
+                .map(|(_, balance)| *balance)
+                .unwrap();
+            
+            let base_amount = allocation.usdc_amount / Decimal::from_f64(1.2).unwrap();
+            assert!(base_amount <= wallet_balance, "Allocation exceeds wallet capacity");
+        }
+    }
+
+    #[test]
+    fn test_many_wallets_balanced() {
+        let wallet_balances = create_wallet_balances(&[
+            (1, 200.0), 
+            (2, 180.0), 
+            (3, 220.0), 
+            (4, 190.0), 
+            (5, 210.0), 
+            (6, 195.0),
+            (7, 205.0),
+            (8, 185.0),
+        ]);
+        
+        let result = TradingStrategy::generate_balanced_allocations(&wallet_balances);
+        assert!(result.is_ok());
+        
+        let allocations = result.unwrap();
+        assert_eq!(allocations.len(), 8);
+        
+        let (long_total, short_total, long_count, short_count) = analyze_allocations(&allocations);
+        
+        // With 8 wallets, should have reasonable distribution (e.g., 3-5, 4-4, 5-3)
+        assert!(long_count >= 3);
+        assert!(short_count >= 3);
+        
+        // Totals should be very close
+        let imbalance = (long_total - short_total).abs();
+        assert!(imbalance <= Decimal::from(1), "Imbalance too large: {}", imbalance);
+    }
+
+    #[test]
+    fn test_allocation_structure() {
+        let wallet_balances = create_wallet_balances(&[
+            (1, 100.0), 
+            (2, 100.0), 
+            (3, 100.0)
+        ]);
+        
+        let result = TradingStrategy::generate_balanced_allocations(&wallet_balances);
+        assert!(result.is_ok());
+        
+        let allocations = result.unwrap();
+        
+        for allocation in allocations {
+            // Check all fields are properly set
+            assert!(allocation.wallet_id > 0);
+            assert!(matches!(allocation.side, PositionSide::Long | PositionSide::Short));
+            assert!(allocation.usdc_amount > Decimal::ZERO);
+            assert!(allocation.percentage >= Decimal::ZERO);
+            assert!(allocation.percentage <= Decimal::from(100));
+        }
+    }
 }

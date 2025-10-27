@@ -489,7 +489,7 @@ impl LighterClient {
     /// Returns `TradingError` if:
     /// * Account retrieval fails
     /// * No positions found in account
-    async fn get_active_positions(&self) -> Result<Vec<LighterPosition>, TradingError> {
+    pub async fn get_active_positions(&self) -> Result<Vec<LighterPosition>, TradingError> {
         let account = self.get_account().await?;
         match account.positions {
             Some(positions) => {
