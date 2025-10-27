@@ -21,7 +21,7 @@ use crate::{
 
 use chrono::{DateTime, Duration, Utc};
 use rust_decimal::Decimal;
-use rand::{seq::SliceRandom};
+use rand::{seq::SliceRandom, Rng};
 use sqlx::PgPool;
 use tokio::time::{sleep, Duration as TokioDuration};
 use colored::*;
@@ -29,9 +29,9 @@ use colored::*;
 
 pub struct TraderClient {
     wallets: Vec<Wallet>,
-    wallet_trading_clients: Vec<WalletTradingClient>,
     position_storage: PositionStorage,
     strategy_storage: StrategyStorage,
+    wallet_trading_clients: Vec<WalletTradingClient>,   
 }
 
 impl TraderClient {
@@ -72,9 +72,9 @@ impl TraderClient {
 
         Ok(Self { 
             wallets, 
-            wallet_trading_clients,
             position_storage,
             strategy_storage,
+            wallet_trading_clients,
         })
     }
 
@@ -99,7 +99,7 @@ impl TraderClient {
             .await?;
 
 
-            match self.close_all_positions_on_lighter().await {
+            match self.close_positions_on_lighter_for_wallets_group(&strategy.wallet_ids).await {
                 Ok(_) => {
                     info!("✅ Strategy {} closed successfully", strategy.id);
                     self.set_strategy_status(&strategy.id, StrategyStatus::Closed, Some(Utc::now()), None).await?;
@@ -207,7 +207,7 @@ impl TraderClient {
 				.await?;
 
             let mut has_failures = false;
-            match self.close_all_positions_on_lighter().await {
+            match self.close_positions_on_lighter_for_wallets_group(&strategy.wallet_ids).await {
                 Ok(_) => {
                     info!("✅ All positions closed successfully");
                 }
@@ -254,9 +254,6 @@ impl TraderClient {
     /// 5. **Parallel Execution**: Opens all positions concurrently for efficiency
     /// 6. **Strategy Tracking**: Creates and persists strategy metadata for monitoring
     /// 
-    /// # Arguments
-    /// * `duration_hours` - How long positions should remain open (typically 4-8 hours)
-    /// 
     /// # Returns
     /// * `Ok(TradingStrategy)` - Complete strategy with all opened positions
     /// * `Err(TradingError)` - If any step fails or insufficient balances
@@ -267,10 +264,12 @@ impl TraderClient {
     /// points farming potential.
     pub async fn farm_points_on_backpack_from_multiple_wallets(
         &self,
-        duration_hours: i64,
     ) -> Result<TradingStrategy, TradingError> {
         info!("🎯 Starting Backpack farming strategy with {} wallets", self.wallets.len());
-        
+        let mut rng = rand::thread_rng();
+        let duration_minutes = rng.gen_range(1..=3);
+        info!("⏱️  Strategy duration: {} minutes", duration_minutes);
+
         // Handle conflicting strategies across our wallets (retry-after-close behavior)
         self.handle_conflicting_strategies().await?;
         info!("✅ No active strategies found for these wallets.");
@@ -289,8 +288,8 @@ impl TraderClient {
         info!("🎲 Selected token: {:?}", selected_token.symbol);
 
         // Step 4: Open positions for each allocation (in parallel)
-        let close_at = Utc::now() + Duration::hours(duration_hours);
-        info!("⏱️  Strategy duration: {} hours", duration_hours);
+        let close_at = Utc::now() + Duration::minutes(duration_minutes);
+        info!("⏱️  Strategy duration: {} minutes", duration_minutes);
         
         // Create futures for all position openings
         let mut position_futures = Vec::new();
@@ -302,7 +301,7 @@ impl TraderClient {
             
             // Create a future for opening this position
             let future = async move {
-                let backpack_client = self.get_backpack_client(allocation.wallet_id)?;
+                let backpack_client = BackpackClient::new(self.find_wallet(allocation.wallet_id)?);
                 
                 let position = backpack_client
                     .open_position(
@@ -373,12 +372,15 @@ impl TraderClient {
         Ok(strategy)
     }
 
-    /// Execute a market-neutral farming strategy on Lighter exchange
+    /// Execute a market-neutral farming strategy on Lighter exchange with wallet grouping
     /// 
-    /// Similar to Backpack farming but optimized for Lighter exchange with
-    /// additional safety features and confirmation steps.
+    /// Enhanced version that automatically groups wallets when more than 3 wallets are available.
+    /// Each group trades a different random token for better diversification.
     /// 
     /// # Enhanced Features
+    /// - **Wallet Grouping**: Automatically creates groups of 3-5 wallets when >3 wallets available
+    /// - **Multi-Token Diversification**: Each group trades a different random token
+    /// - **Group-based Strategies**: Separate strategy tracking for each wallet group
     /// - **Pre-trade preview**: Displays strategy details before execution
     /// - **Partial failure handling**: Automatically rolls back if any position fails
     /// - **Detailed logging**: Comprehensive progress and status reporting
@@ -388,19 +390,23 @@ impl TraderClient {
     /// * `duration_minutes` - Duration in minutes for position lifetime
     /// 
     /// # Returns
-    /// * `Ok(TradingStrategy)` - Complete strategy with all opened positions
+    /// * `Ok(TradingStrategy)` - Complete strategy with all opened positions (first group's strategy)
     /// * `Err(TradingError)` - If any position fails (with automatic rollback)
+    /// 
+    /// # Grouping Logic
+    /// - If ≤3 wallets: Single group with one random token
+    /// - If >3 wallets: Random groups of 3-5 wallets, each with different random tokens
+    /// - Groups are created randomly for better distribution
+    /// - Each group executes as an independent market-neutral strategy
     /// 
     /// # Safety Mechanisms
     /// - All-or-nothing position opening with automatic rollback on failures
     /// - Balance verification before trading
     /// - Strategy preview for user confirmation (commented out but available)
     /// - Comprehensive error handling and cleanup
-    pub async fn farm_points_on_lighter_from_multiple_wallets(
-        &self,
-        duration_minutes: i64,
-    ) -> Result<TradingStrategy, TradingError> {
+    pub async fn farm_points_on_lighter_from_multiple_wallets(&self) -> Result<Vec<TradingStrategy>, TradingError> {
         info!("🎯 Starting Lighter farming strategy with {} wallets", self.wallets.len());
+        let mut rng = rand::thread_rng();
 
         // Handle conflicting strategies across our wallets (retry-after-close behavior)
         self.handle_conflicting_strategies().await?;
@@ -412,161 +418,402 @@ impl TraderClient {
             info!("💰 Wallet #{}: {:.2} USDC", id, balance);
         }
 
-        // Step 2: Generate balanced long/short allocations
-        let allocations = TradingStrategy::generate_balanced_allocations(&wallet_balances)?;
+        // Step 2: Create wallet groups based on total wallet count
+        let wallet_groups = if self.wallets.len() > 3 {
+            self.create_random_wallet_groups(3, 5)?
+        } else {
+            // Single group with all wallets
+            vec![self.wallets.iter().map(|w| w.id).collect()]
+        };
 
-        // Step 3: Randomly select a token to trade
-        let selected_token = self.select_random_token()?;
-        let token_symbol = selected_token.symbol.to_string();
-        info!("🎲 Selected token: {:?}", selected_token.symbol);
-
-        // Step 4: Open positions for each allocation (in parallel)
-        let close_at = Utc::now() + Duration::minutes(duration_minutes);
-        info!("⏱️  Strategy duration: {} minutes", duration_minutes);
-        
-        // Create futures for all position openings
-        let mut position_futures = Vec::new();
-
-        // Display strategy preview
-        TradingStrategy::display_strategy_preview(
-            "Lighter",
-            &token_symbol,
-            &allocations,
-            &wallet_balances,
-            duration_minutes
-        );
-
-        // Ask for final confirmation before opening positions
-        // let should_proceed = Confirm::new("Do you agree with this strategy and want to proceed with opening positions?")
-        //     .with_default(false)
-        //     .prompt()
-        //     .context("Failed to get final confirmation")?;
-
-        // if !should_proceed {
-        //     warn!("❌ Strategy cancelled. No positions were opened.");
-        //     return Err(TradingError::InvalidInput("Strategy cancelled. No positions were opened.".into()));
-        // }
-        
-        for allocation in allocations {
-            let token = selected_token.clone();
-            let side = allocation.side;
-            let usdc_amount = allocation.usdc_amount;
-            
-            // Create a future for opening this position
-            let future = async move {
-                let lighter_client = self.get_lighter_client(allocation.wallet_id)?;
-                let position = lighter_client
-                    .open_position(
-                        token,
-                        side,
-                        close_at,
-                        usdc_amount,
-                    )
-                    .await?;
-                
-                Ok::<(Position, PositionSide, u8, LighterClient), TradingError>
-                ((position.clone(), side, allocation.wallet_id, lighter_client))
-            };
-            
-            position_futures.push(future);
+        info!("📊 Created {} wallet group(s) for trading:", wallet_groups.len());
+        for (i, group) in wallet_groups.iter().enumerate() {
+            info!("   Group {}: {:?}", i + 1, group);
         }
-        
-        // Execute all position openings in parallel
-        info!("🚀 Opening {} positions in parallel...", position_futures.len());
-        let results = futures::future::join_all(position_futures).await;
 
-        // Check all results: separate successful and failed positions
-        let mut opened_positions = Vec::new();
-        let mut errors = Vec::new();
+        // Step 3: Execute strategies for each group
+        let mut all_strategies: Vec<TradingStrategy> = Vec::new();
+        let duration_minutes = rng.gen_range(1..=3);
 
-        for result in results {
-            match result {
-                Ok((position, side, wallet, client)) => {
-                    opened_positions.push((position, side, wallet, client));
-                }
-                Err(e) => {
-                    errors.push(e);
-                }
+        for (group_index, wallet_group) in wallet_groups.into_iter().enumerate() {
+            info!("🚀 Executing strategy for group {} (wallets: {:?})", group_index + 1, wallet_group);
+
+            let close_at = Utc::now() + Duration::minutes(duration_minutes + rng.gen_range(1..=3)); // Add 1-3 minutes to the duration to avoid conflicts
+            info!("⏱️  Strategy duration: {} minutes", duration_minutes);
+
+            // Filter balances for this group
+            let group_balances: Vec<(u8, Decimal)> = wallet_balances
+                .iter()
+                .filter(|(id, _)| wallet_group.contains(id))
+                .cloned()
+                .collect();
+
+            if group_balances.is_empty() {
+                warn!("⚠️  Group {} has no wallets with balances, skipping", group_index + 1);
+                continue;
             }
-        }
 
-        // If there were any errors, consider this a partial failure
-        if !errors.is_empty() {
-            let error = errors
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| TradingError::InvalidInput("Unknown error opening positions".to_string()));
+            // Generate balanced allocations for this group
+            let allocations = TradingStrategy::generate_balanced_allocations(&group_balances)?;
 
-            error!("❌ Position opening failed: {}", error);
+            // Select a random token for this group (different for each group)
+            let selected_token = self.select_random_token()?;
+            let token_symbol = selected_token.symbol.to_string();
+            info!("🎲 Group {} selected token: {:?}", group_index + 1, selected_token.symbol);
 
-            if !opened_positions.is_empty() {
-                warn!(
-                    "🔄 Rolling back {} successfully opened position(s)...",
-                    opened_positions.len()
-                );
+            // Create futures for all position openings in this group
+            let mut position_futures = Vec::new();
+            
+            for allocation in allocations {
+                let token = selected_token.clone();
+                let side = allocation.side;
+                let usdc_amount = allocation.usdc_amount;
                 
-                match self.close_all_positions_on_lighter().await {
-                    Ok(_) => {
-                        info!("✅ All positions rolled back successfully");
+                let future = async move {
+                    let lighter_client = self.get_lighter_client(allocation.wallet_id)?;
+                    let position = lighter_client
+                        .open_position(
+                            token,
+                            side,
+                            close_at,
+                            usdc_amount,
+                        )
+                        .await?;
+                    
+                    Ok::<(Position, PositionSide, u8, LighterClient), TradingError>
+                    ((position.clone(), side, allocation.wallet_id, lighter_client))
+                };
+                
+                position_futures.push(future);
+            }
+        
+            // Execute all position openings in parallel for this group
+            info!("🚀 Opening {} positions for group {}...", position_futures.len(), group_index + 1);
+            let results = futures::future::join_all(position_futures).await;
+
+            // Check all results for this group
+            let mut opened_positions = Vec::new();
+            let mut errors = Vec::new();
+
+            for result in results {
+                match result {
+                    Ok((position, side, wallet, client)) => {
+                        opened_positions.push((position, side, wallet, client));
                     }
                     Err(e) => {
-                        error!("❌ Failed to roll back positions: {}", e);
+                        errors.push(e);
                     }
                 }
+            }
+
+            // If there were any errors in this group, roll back and return error
+            if !errors.is_empty() {
+                let error = errors
+                    .into_iter()
+                    .next()
+                    .unwrap_or_else(|| TradingError::InvalidInput("Unknown error opening positions".to_string()));
+
+                error!("❌ Position opening failed for group {}: {}", group_index + 1, error);
+
+                if !opened_positions.is_empty() {
+                    warn!(
+                        "🔄 Rolling back {} successfully opened position(s) from group {}...",
+                        opened_positions.len(),
+                        group_index + 1
+                    );
+                    
+                    // Roll back only positions from this group
+                    self.close_positions_on_lighter_for_wallets_group(&wallet_group).await?;
+                } else {
+                    warn!("No positions succeeded in group {}, nothing to roll back.", group_index + 1);
+                }
+
+                return Err(error);
+            }
+        
+            // Separate results into longs and shorts for this group
+            let mut long_positions = Vec::new();
+            let mut short_positions = Vec::new();
+            
+            for (position, side, _wallet_id, _client) in opened_positions {
+                match side {
+                    crate::model::PositionSide::Long => long_positions.push(position),
+                    crate::model::PositionSide::Short => short_positions.push(position),
+                }
+            }
+        
+            info!("✅ All positions opened successfully for group {}!", group_index + 1);
+
+            // Build the trading strategy for this group
+            let mut strategy = TradingStrategy::build_from_positions(
+                selected_token.get_symbol_string(Exchange::Lighter),
+                long_positions.clone(), 
+                short_positions.clone()
+            )?;
+
+            // Add group information to strategy metadata
+            strategy.wallet_ids = wallet_group;
+        
+            // Link positions to strategy and save
+            let strategy_id = strategy.id.clone();
+            for position in strategy.longs.iter_mut().chain(strategy.shorts.iter_mut()) {
+                position.strategy_id = Some(strategy_id.clone());
+            }
+
+            // Save strategy
+            self.strategy_storage.save_strategy(&strategy).await?;
+            all_strategies.push(strategy.clone());
+
+            info!("✅ Strategy {} for group {} executed successfully!", strategy_id, group_index + 1);
+            info!("   Token: {}", token_symbol);
+            info!("   Long positions: {} | Total size: {:.2} USDC", strategy.longs.len(), strategy.longs_size);
+            info!("   Short positions: {} | Total size: {:.2} USDC", strategy.shorts.len(), strategy.shorts_size);
+        }
+        
+        // Display summary of all executed strategies
+        info!("🎊 All {} strategy groups completed successfully!", all_strategies.len());
+        for (i, strategy) in all_strategies.iter().enumerate() {
+            let close_at_local = strategy.close_at + chrono::Duration::hours(8);
+            let now_local = Utc::now() + chrono::Duration::hours(8);
+            let minutes_from_now = ((close_at_local - now_local).num_minutes()).max(0);
+            
+            info!(
+                "   Group {}: {} | Wallets: {:?} | Close in {} minutes",
+                i + 1,
+                strategy.token_symbol,
+                strategy.wallet_ids,
+                minutes_from_now
+            );
+        }
+
+        Ok(all_strategies)
+    }
+
+    /// Close all open positions on Lighter exchange across all wallets, in parallel, retrying up to 5 attempts.
+    ///
+    /// This method attempts to close every open position for every wallet,
+    /// spawning all close operations as concurrent async tasks. Retries up to 5 times if failures occur.
+    ///
+    /// # Returns
+    /// * `Ok(())` - All close operations completed successfully
+    /// * `Err(TradingError)` - If any close operation fails after all attempts
+    async fn close_all_positions_on_lighter_for_all_wallets(&self) -> Result<(), TradingError> {
+        use futures::future::try_join_all;
+
+        for attempt in 1..=5 {
+            info!("Attempt {} to close all positions on Lighter (all wallets)...", attempt);
+
+            let close_futures = self.wallets.iter().map(|wallet| {
+                let wallet = wallet.clone();
+
+                async move {
+                    let client = LighterClient::new(&wallet).await?;
+                    client.close_all_positions().await
+                }
+            });
+
+            let results = try_join_all(close_futures).await;
+
+            match results {
+                Ok(_) => {
+                    info!("✅ Successfully closed all positions on Lighter on attempt {}", attempt);
+                    return Ok(());
+                }
+                Err(e) => {
+                    error!("❌ Attempt {} failed to close all positions on Lighter: {}", attempt, e);
+                    if attempt < 5 {
+                        info!("Retrying in 350ms...");
+                        sleep(crate::Duration::from_millis(350)).await;
+                    } else {
+                        error!("❌ Ultimately failed to close all positions on Lighter after 5 attempts");
+                        return Err(TradingError::ExchangeError(format!(
+                            "Failed to close all positions on Lighter after 5 attempts: {} | YOU NEED TO CLOSE THE POSITIONS MANUALLY!",
+                            e
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Close open positions on Lighter exchange for a specific group of wallets, retrying up to 5 attempts.
+    ///
+    /// This method attempts to close positions only for the provided wallets,
+    /// spawning all close operations as concurrent async tasks. Retries up to 5 times if failures occur.
+    ///
+    /// # Arguments
+    /// * `wallet_ids` - Vector of wallet IDs to close positions for
+    ///
+    /// # Returns
+    /// * `Ok(())` - All positions closed successfully for the group
+    /// * `Err(TradingError)` - If any close operation fails after all attempts
+    async fn close_positions_on_lighter_for_wallets_group(&self, wallet_ids: &[u8]) -> Result<(), TradingError> {
+        use futures::future::try_join_all;
+
+        for attempt in 1..=5 {
+            info!(
+                "Attempt {} to close positions on Lighter for wallet group {:?}...",
+                attempt, wallet_ids
+            );
+
+            let close_futures = wallet_ids.iter().map(|&wallet_id| {
+                let wallet = self.find_wallet(wallet_id);
+                async move {
+                    let wallet = wallet?;
+                    let client = LighterClient::new(wallet).await?;
+                    client.close_all_positions().await
+                }
+            });
+
+            let results = try_join_all(close_futures).await;
+
+            match results {
+                Ok(_) => {
+                    info!("✅ Successfully closed all positions for wallet group on attempt {}", attempt);
+                    return Ok(());
+                }
+                Err(e) => {
+                    error!(
+                        "❌ Attempt {} failed to close positions for wallet group {:?}: {}",
+                        attempt, wallet_ids, e
+                    );
+                    if attempt < 5 {
+                        info!("Retrying in 350ms...");
+                        sleep(crate::Duration::from_millis(350)).await;
+                    } else {
+                        error!(
+                            "❌ Ultimately failed to close positions for wallet group {:?} after 5 attempts",
+                            wallet_ids
+                        );
+                        return Err(TradingError::ExchangeError(format!(
+                            "Failed to close positions for wallet group {:?} after 5 attempts: {} | YOU NEED TO CLOSE THE POSITIONS MANUALLY!",
+                            wallet_ids, e
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Close open positions on Lighter exchange for a single wallet, retrying up to 5 attempts.
+    ///
+    /// This method attempts to close all open positions for a given wallet by ID,
+    /// and retries up to 5 times if failures occur.
+    ///
+    /// # Arguments
+    /// * `wallet_id` - The wallet ID for which to close positions
+    ///
+    /// # Returns
+    /// * `Ok(())` - All positions closed successfully for the wallet
+    /// * `Err(TradingError)` - If the close operation fails after all attempts
+    async fn close_positions_on_lighter_for_wallet(&self, wallet_id: u8) -> Result<(), TradingError> {
+        for attempt in 1..=5 {
+            info!("Attempt {} to close positions on Lighter for wallet {}...", attempt, wallet_id);
+            let client_result = self.get_lighter_client(wallet_id);
+            let client = match client_result {
+                Ok(c) => c,
+                Err(e) => {
+                    error!("❌ Failed to get Lighter client for wallet {}: {}", wallet_id, e);
+                    return Err(e);
+                }
+            };
+
+            let close_result = client.close_all_positions().await;
+            match close_result {
+                Ok(_) => {
+                    info!("✅ Successfully closed all positions for wallet {} on attempt {}", wallet_id, attempt);
+                    return Ok(());
+                }
+                Err(e) => {
+                    error!("❌ Attempt {} failed to close positions for wallet {}: {}", attempt, wallet_id, e);
+                    if attempt < 5 {
+                        info!("Retrying in 350ms...");
+                        sleep(crate::Duration::from_millis(350)).await;
+                    } else {
+                        error!("❌ Ultimately failed to close positions for wallet {} after 5 attempts", wallet_id);
+                        return Err(TradingError::ExchangeError(format!(
+                            "Failed to close positions for wallet {} after 5 attempts: {} | YOU NEED TO CLOSE THE POSITIONS MANUALLY!",
+                            wallet_id, e
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Create random wallet groups with 3-5 wallets per group
+    /// 
+    /// # Arguments
+    /// * `min_group_size` - Minimum number of wallets per group (default: 3)
+    /// * `max_group_size` - Maximum number of wallets per group (default: 5)
+    /// 
+    /// # Returns
+    /// * `Ok(Vec<Vec<u8>>)` - Vector of wallet groups, each containing wallet IDs
+    /// * `Err(TradingError)` - If grouping is not possible
+    fn create_random_wallet_groups(&self, min_group_size: usize, max_group_size: usize) -> Result<Vec<Vec<u8>>, TradingError> {
+        if min_group_size > max_group_size {
+            return Err(TradingError::InvalidInput("min_group_size cannot be greater than max_group_size".into()));
+        }
+
+        if self.wallets.len() < min_group_size {
+            return Err(TradingError::InvalidInput(format!(
+                "Not enough wallets ({}) for minimum group size ({})",
+                self.wallets.len(),
+                min_group_size
+            )));
+        }
+
+        let mut wallet_ids: Vec<u8> = self.wallets.iter().map(|w| w.id).collect();
+        let mut rng = rand::thread_rng();
+        
+        // Shuffle wallets for random distribution
+        wallet_ids.shuffle(&mut rng);
+        
+        let mut groups = Vec::new();
+        let mut current_index = 0;
+        
+        while current_index < wallet_ids.len() {
+            // Calculate remaining wallets
+            let remaining = wallet_ids.len() - current_index;
+            
+            // Determine group size
+            let group_size = if remaining <= max_group_size {
+                // Last group - take all remaining
+                remaining
             } else {
-                warn!("No positions succeeded, nothing to roll back.");
+                // Calculate optimal group size to avoid very small last groups
+                let optimal_size = if remaining - min_group_size <= max_group_size {
+                    // Distribute evenly to avoid small last group
+                    let groups_remaining = (remaining as f64 / max_group_size as f64).ceil() as usize;
+                    (remaining + groups_remaining - 1) / groups_remaining // ceiling division
+                } else {
+                    // Use random size within bounds
+                    rng.gen_range(min_group_size..=max_group_size)
+                };
+                
+                optimal_size.min(remaining)
+            };
+            
+            // Create group
+            let group = wallet_ids[current_index..current_index + group_size].to_vec();
+            groups.push(group);
+            current_index += group_size;
+        }
+        
+        // Ensure last group meets minimum size requirement by redistributing if needed
+        if let Some(last_group) = groups.last() {
+            if last_group.len() < min_group_size && groups.len() > 1 {
+                let last_group = groups.pop().unwrap();
+                if let Some(prev_group) = groups.last_mut() {
+                    prev_group.extend(last_group);
+                }
             }
-
-            return Err(error);
         }
         
-        // Separate results into longs and shorts
-        let mut long_positions = Vec::new();
-        let mut short_positions = Vec::new();
-        
-        for (position, side, _wallet_id, _client) in opened_positions {
-            match side {
-                crate::model::PositionSide::Long => long_positions.push(position),
-                crate::model::PositionSide::Short => short_positions.push(position),
-            }
-        }
-        
-        info!("✅ All positions opened successfully!");
-
-        // Step 5: Build the trading strategy
-        let mut strategy = TradingStrategy::build_from_positions(
-            selected_token.get_symbol_string(Exchange::Lighter),
-            long_positions, 
-            short_positions
-        )?;
-        
-        // Step 6: Link positions to strategy and save everything
-        let strategy_id = strategy.id.clone();
-        
-        // Update all positions with the strategy_id
-        for position in strategy.longs.iter_mut().chain(strategy.shorts.iter_mut()) {
-            position.strategy_id = Some(strategy_id.clone());
-        }
-        
-        // Save strategy first
-        self.strategy_storage.save_strategy(&strategy).await?;
-        
-        info!("✅ Strategy {} executed successfully!", strategy_id);
-        info!("   Token: {}", strategy.token_symbol);
-        info!("   Long positions: {} | Total size: {:.2} USDC", strategy.longs.len(), strategy.longs_size);
-        info!("   Short positions: {} | Total size: {:.2} USDC", strategy.shorts.len(), strategy.shorts_size);
-        let close_at_local = strategy.close_at + chrono::Duration::hours(8);
-        let now_local = Utc::now() + chrono::Duration::hours(8);
-        let minutes_from_now = ((close_at_local - now_local).num_minutes()).max(0);
-        
-        info!(
-            "   Close at (your local, UTC+8): {} ({}), in {} minutes",
-            close_at_local.format("%a %H:%M"),
-            close_at_local.format("%Y-%m-%d"),
-            minutes_from_now
-        );
-        
-        Ok(strategy)
+        Ok(groups)
     }
 
 
@@ -664,43 +911,14 @@ impl TraderClient {
     /// # Returns
     /// * `Ok(BackpackClient)` - Configured client for the wallet
     /// * `Err(TradingError)` - If wallet client not found
-    fn get_backpack_client(&self, wallet_id: u8) -> Result<BackpackClient, TradingError> {
-        Ok(self.wallet_trading_clients
-            .iter().find(|w| w.wallet.id == wallet_id)
-            .ok_or_else(|| TradingError::InvalidInput(format!("Backpack client for wallet #{} not found", wallet_id)))?
-            .backpack_client
-            .clone())
-    }
+    // fn get_backpack_client(&self, wallet_id: u8) -> Result<BackpackClient, TradingError> {
+    //     Ok(self.wallet_trading_clients
+    //         .iter().find(|w| w.wallet.id == wallet_id)
+    //         .ok_or_else(|| TradingError::InvalidInput(format!("Backpack client for wallet #{} not found", wallet_id)))?
+    //         .backpack_client
+    //         .clone())
+    // }
 
-
-    /// Close all open positions on Lighter exchange across all wallets
-    /// 
-    /// This method attempts to close every open position for every wallet
-    /// managed by this client. Used for emergency shutdowns and rollbacks.
-    /// 
-    /// # Returns
-    /// * `Ok(())` - All close operations initiated successfully
-    /// * `Err(TradingError)` - If any close operation fails
-    async fn close_all_positions_on_lighter(&self) -> Result<(), TradingError> {
-        let mut futures = Vec::new();
-        for wallet in &self.wallets {
-            let client = LighterClient::new(&wallet).await?;
-            
-            futures.push(async move {
-                client.close_all_positions().await
-            });
-        }
-
-        let results = futures::future::join_all(futures).await;
-        for result in results {
-            if let Err(e) = result {
-                error!("❌ Failed to close all positions on Lighter: {}", e);
-                return Err(e);
-            }
-        }
-
-        Ok(())
-    }
 
 
     /// Fetch USDC balances for all wallets from Backpack exchange
@@ -712,7 +930,7 @@ impl TraderClient {
 		let mut balances = Vec::with_capacity(self.wallets.len());
 
 		for wallet in &self.wallets {
-			let client = self.get_backpack_client(wallet.id)?;
+			let client = BackpackClient::new(&wallet);
 			let balance = client.get_usdc_balance().await?;
 
 			if balance <= Decimal::ZERO {
@@ -728,29 +946,32 @@ impl TraderClient {
 	}
 
 
-    /// Fetch USDC balances for all wallets from Lighter exchange
+    /// Fetch USDC balances for all wallets from Lighter exchange in parallel
     /// 
     /// # Returns
     /// * `Ok(Vec<(u8, Decimal)>)` - Vector of (wallet_id, balance) pairs
     /// * `Err(TradingError)` - If any wallet has insufficient balance or API fails
-	pub async fn fetch_wallet_balances_on_lighter(&self) -> Result<Vec<(u8, Decimal)>, TradingError> {
-		let mut balances = Vec::with_capacity(self.wallets.len());
+    pub async fn fetch_wallet_balances_on_lighter(&self) -> Result<Vec<(u8, Decimal)>, TradingError> {
+        use futures::future::try_join_all;
 
-		for wallet in &self.wallets {
-			let client = self.get_lighter_client(wallet.id)?;
-			let balance = client.get_usdc_balance().await?;
+        // For each wallet, spawn an async block to fetch its balance
+        let balance_futures = self.wallets.iter().map(|wallet| {
+            async move {
+                let client = self.get_lighter_client(wallet.id)?;
+                let balance = client.get_usdc_balance().await?;
+                if balance <= Decimal::ZERO {
+                    return Err(TradingError::InvalidInput(format!(
+                        "Wallet #{} has insufficient USDC balance: {}",
+                        wallet.id, balance
+                    )));
+                }
+                Ok((wallet.id, balance))
+            }
+        });
 
-			if balance <= Decimal::ZERO {
-				return Err(TradingError::InvalidInput(format!(
-					"Wallet #{} has insufficient USDC balance: {}",
-					wallet.id, balance
-				)));
-			}
-
-			balances.push((wallet.id, balance));
-		}
-		Ok(balances)
-	}
+        let balances: Vec<(u8, Decimal)> = try_join_all(balance_futures).await?;
+        Ok(balances)
+    }
 
 
 
@@ -791,10 +1012,8 @@ impl TraderClient {
 			info!("⚠️  Found {} active strategies involving the provided wallets", conflicting.len());
 			info!("📋 Waiting for these strategies to complete before starting new trades...");
 			self.monitor_and_close_strategies(conflicting).await?;
-			
-            return Err(TradingError::InvalidInput(
-				"Active strategies were completed. Please call the function again to create new trades.".into(),
-			));
+
+            info!("🔄 Active strategies were completed. Starting new trades...");
 		}
 
 		Ok(())

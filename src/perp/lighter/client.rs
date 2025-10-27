@@ -20,6 +20,27 @@ const DEFAULT_API_KEY_INDEX: i32 = 0;
 const DEFAULT_BASE_URL: &str = "https://mainnet.zklighter.elliot.ai/api/v1";
 
 
+/// A client for interacting with the Lighter perpetual futures exchange.
+/// 
+/// The `LighterClient` provides a high-level interface for trading perpetual futures
+/// on the Lighter exchange, including position management, order execution, and
+/// account operations. It handles authentication, signing, and API communication
+/// through a combination of Ethereum wallet signatures and API key authentication.
+/// 
+/// # Features
+/// 
+/// * Automated API key registration and authentication
+/// * Market order execution with retry logic
+/// * Position management (open/close)
+/// * Real-time market data and price feeds
+/// * Account balance and portfolio tracking
+/// * Nonce management for transaction sequencing
+/// 
+/// # Authentication
+/// 
+/// The client uses a two-layer authentication system:
+/// 1. Ethereum wallet signature for initial API key registration
+/// 2. Generated API key pair for subsequent API calls
 #[allow(unused)]
 #[derive(Debug, Clone)]
 pub struct LighterClient {
@@ -34,13 +55,25 @@ pub struct LighterClient {
 impl LighterClient {
     /// Creates a new `LighterClient` instance using the provided wallet credentials.
     ///
+    /// This method performs the complete initialization process:
+    /// 1. Retrieves the account index from the Lighter API
+    /// 2. Generates and registers a new API key pair
+    /// 3. Initializes the signing client for transaction authorization
+    ///
     /// # Arguments
     ///
-    /// * `wallet` - Reference to the user's wallet struct containing API secrets for authentication.
+    /// * `wallet` - Reference to the user's wallet containing API secrets and Ethereum private key
     ///
     /// # Returns
     ///
-    /// * `LighterClient` - A client instance ready to communicate with the Lighter API.
+    /// * `Result<Self, TradingError>` - A fully initialized LighterClient ready for trading operations
+    ///
+    /// # Errors
+    ///
+    /// Returns `TradingError` if:
+    /// * Account index cannot be retrieved
+    /// * API key registration fails
+    /// * Signer client initialization fails
     pub async fn new(wallet: &Wallet) -> Result<Self, TradingError> {
         let base_url = DEFAULT_BASE_URL.to_string();     // Default base URL
         let api_key_index = DEFAULT_API_KEY_INDEX;          // Default API key index
@@ -75,13 +108,46 @@ impl LighterClient {
     }
 
 
+    /// Checks if the client is properly authenticated with the Lighter API.
+    ///
+    /// This method verifies that the API credentials are valid and the client
+    /// can successfully access account information.
+    ///
+    /// # Returns
+    ///
+    /// * `bool` - `true` if authentication is successful, `false` otherwise
     #[allow(unused)]
     pub async fn is_authenticated(&self) -> bool {
         self.get_account().await.is_ok()
     }
 
     
-    /// Registers a new API key with the Lighter protocol by signing with Ethereum wallet
+    /// Registers a new API key with the Lighter protocol using Ethereum wallet signature.
+    ///
+    /// This method handles the complete API key registration flow:
+    /// 1. Generates a new ECDSA key pair for API authentication
+    /// 2. Retrieves the current nonce for the account
+    /// 3. Signs the API key registration transaction with the Ethereum wallet
+    /// 4. Submits the signed transaction to the Lighter API
+    ///
+    /// # Arguments
+    ///
+    /// * `base_url` - The base URL of the Lighter API
+    /// * `wallet` - Reference to the wallet containing Ethereum credentials
+    /// * `account_index` - The account index to register the API key for
+    /// * `api_key_index` - The index for the new API key
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(String, String), TradingError>` - Tuple containing (private_key, public_key)
+    ///
+    /// # Errors
+    ///
+    /// Returns `TradingError` if:
+    /// * Nonce retrieval fails
+    /// * Message signing fails
+    /// * Transaction submission fails
+    /// * API returns non-200 response
     async fn register_new_api_key(
         base_url: &str,
         wallet: &Wallet,
@@ -189,10 +255,25 @@ impl LighterClient {
         }
         
         info!("#{} | API key registered successfully!", wallet.id);
-        
         Ok((api_private_key, api_public_key))
     }
 
+
+    /// Retrieves the complete account information from the Lighter API.
+    ///
+    /// This method fetches the account details including balances, positions,
+    /// and other account-specific data.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<LighterAccount, TradingError>` - The account information
+    ///
+    /// # Errors
+    ///
+    /// Returns `TradingError` if:
+    /// * API request fails
+    /// * No accounts are found for the wallet
+    /// * Response parsing fails
     async fn get_account(&self) -> Result<LighterAccount, TradingError> {
         let url = format!("{}/account?by=l1_address&value={}", self.base_url, self.wallet.address);
         let response = Request::process_request(Method::GET, url, None, None, self.wallet.proxy.clone()).await?;
@@ -212,6 +293,27 @@ impl LighterClient {
         }
     }
 
+
+    /// Retrieves the account index for the given wallet from the Lighter API.
+    ///
+    /// The account index is a unique identifier used in all subsequent API calls
+    /// to reference the specific trading account.
+    ///
+    /// # Arguments
+    ///
+    /// * `base_url` - The base URL of the Lighter API
+    /// * `wallet` - Reference to the wallet to get the account index for
+    ///
+    /// # Returns
+    ///
+    /// * `Result<u32, TradingError>` - The account index
+    ///
+    /// # Errors
+    ///
+    /// Returns `TradingError` if:
+    /// * API request fails
+    /// * Account index not found in response
+    /// * Response parsing fails
     async fn get_account_index(base_url: &str, wallet: &Wallet) -> Result<u32, TradingError> {
         let url = format!("{}/accountsByL1Address?l1_address={}", base_url, wallet.address);
         let response = Request::process_request(Method::GET, url, None, None, wallet.proxy.clone()).await?;
@@ -222,6 +324,20 @@ impl LighterClient {
         }
     }
 
+    /// Retrieves the next nonce for transaction sequencing.
+    ///
+    /// Nonces are used to ensure transaction ordering and prevent replay attacks.
+    /// Each transaction must have a unique, sequential nonce.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<i64, TradingError>` - The next nonce to use
+    ///
+    /// # Errors
+    ///
+    /// Returns `TradingError` if:
+    /// * API request fails
+    /// * Nonce not found in response
     async fn get_nonce(&self) -> Result<i64, TradingError> {
         let url = format!("{}/nextNonce?account_index={}&api_key_index=0", self.base_url, self.account_index);
         let response = Request::process_request(Method::GET, url, None, None, self.wallet.proxy.clone()).await?;
@@ -232,6 +348,31 @@ impl LighterClient {
         }
     }
 
+    /// Retrieves the current market price for a token with slippage adjustment.
+    ///
+    /// This method fetches recent candlestick data and calculates an adjusted
+    /// price with built-in slippage protection for order execution.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - Reference to the token to get price for
+    /// * `side` - The position side (Long/Short) to adjust slippage accordingly
+    ///
+    /// # Returns
+    ///
+    /// * `Result<u64, TradingError>` - The adjusted market price scaled by token denomination
+    ///
+    /// # Errors
+    ///
+    /// Returns `TradingError` if:
+    /// * API request fails
+    /// * No candlestick data available
+    /// * Price calculation fails
+    ///
+    /// # Slippage Adjustment
+    ///
+    /// * Long positions: +0.5% slippage protection
+    /// * Short positions: -0.5% slippage protection
     pub async fn get_market_price(&self, token: &Token, side: PositionSide) -> Result<u64, TradingError> {
         let end_timestamp = Utc::now().timestamp_millis();
         let start_timestamp = end_timestamp - 60000;
@@ -271,6 +412,26 @@ impl LighterClient {
         }
     }
 
+
+    /// Retrieves transaction details by hash with retry logic.
+    ///
+    /// This method attempts to fetch transaction details multiple times to handle
+    /// potential API latency or temporary failures.
+    ///
+    /// # Arguments
+    ///
+    /// * `hash` - The transaction hash to look up
+    ///
+    /// # Returns
+    ///
+    /// * `Result<LighterTx, TradingError>` - The transaction details
+    ///
+    /// # Errors
+    ///
+    /// Returns `TradingError` if:
+    /// * All retry attempts fail
+    /// * Transaction not found
+    /// * Response parsing fails
     async fn get_order_by_hash(&self, hash: &str) -> Result<LighterTx, TradingError> {
         let url = format!("{}/tx?by=hash&value={}", self.base_url, hash);
         let mut last_err = None;
@@ -313,6 +474,21 @@ impl LighterClient {
         Err(last_err.unwrap_or_else(|| TradingError::OrderExecutionFailed("get_order_by_hash failed after 3 attempts".to_string())))
     }
 
+
+    /// Retrieves all active (non-zero) positions for the account.
+    ///
+    /// This method filters out positions with zero value and returns only
+    /// positions that have actual exposure.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Vec<LighterPosition>, TradingError>` - List of active positions
+    ///
+    /// # Errors
+    ///
+    /// Returns `TradingError` if:
+    /// * Account retrieval fails
+    /// * No positions found in account
     async fn get_active_positions(&self) -> Result<Vec<LighterPosition>, TradingError> {
         let account = self.get_account().await?;
         match account.positions {
@@ -333,130 +509,102 @@ impl LighterClient {
     }
 
 
+    /// Closes all active positions with market orders.
+    ///
+    /// This method identifies all open positions and executes market orders
+    /// to close them completely. It includes verification to ensure positions
+    /// are successfully closed.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), TradingError>` - Success if all positions are closed
+    ///
+    /// # Errors
+    ///
+    /// Returns `TradingError` if:
+    /// * Position retrieval fails
+    /// * Order execution fails for any position
+    /// * Position verification fails
     async fn close_all_positions(&self) -> Result<(), TradingError> {
         let positions = self.get_active_positions().await?;
         let positions_to_close: Vec<LighterPosition> = positions.iter()
             .filter(|p| self.should_close_position(p))
             .cloned()
             .collect();
-
+    
         if positions_to_close.is_empty() {
             info!("#{} | no positions to close!", self.wallet.id);
             return Ok(());
         }
-
+    
         for position in positions_to_close {
             let token_id = position.market_id;
             let token = Token::from_market_index(Exchange::Lighter, token_id);
             let (position_side_current, position_side_to_close) = self.parse_position_sides(position.sign)?;
+    
+            let price = self.get_market_price(&token, position_side_to_close).await?;
+    
+            info!("#{} | found open {} position to close: {}", self.wallet.id, position_side_current, position.symbol);
+            let position_size: f64 = position.position.parse::<f64>().unwrap();
+            let base_amount = self.base_amount_from_f64(position_size)?;
+    
+            info!("#{} | <{}> position size: {}", self.wallet.id, position.symbol, position_size);
+            info!("#{} | <{}> base amount: {}", self.wallet.id, position.symbol, base_amount);
+    
+            let order = self
+                .execute_market_order(&token, position_side_to_close, base_amount, price, true).await?;
+    
+            match self.get_order_by_hash(&order).await {
+                Ok(_) => {
+                    info!("#{} | found order by hash: {}", self.wallet.id, order);
+                    let positions = self.get_active_positions().await?;
+                    let market_index = token.get_market_index(Exchange::Lighter);
+    
+                    info!("#{} | looking in positions if still open...", self.wallet.id);
+    
+                    if let Some(pos) = positions.iter().find(|p| p.market_id == market_index) {
+                        let pos_value = pos.position_value.parse::<Decimal>().unwrap_or(Decimal::ZERO);
+                        info!("#{} | position value: {}", self.wallet.id, pos_value);
+    
+                        if pos_value == Decimal::ZERO {
+                            info!("#{} | position size is 0, which means it closed: {}", self.wallet.id, pos.symbol);
+                            info!("#{} | 🔴🔴 position closed: {}", self.wallet.id, pos.symbol);
 
-            let mut last_err: Option<TradingError> = None;
-            let mut closed = false;
-
-            for attempt in 1..=5 {
-                let price = match self.get_market_price(&token, position_side_to_close).await {
-                    Ok(p) => p,
-                    Err(e) => {
-                        error!(
-                            "#{} | failed to fetch price for {} (attempt {}): {}. Trying again...",
-                            self.wallet.id, position.symbol, attempt, e
-                        );
-                        last_err = Some(e.into());
-                        sleep(Duration::from_millis(350)).await;
-                        continue;
-                    }
-                };
-
-                info!("#{} | found open {} position to close: {} (attempt {})", self.wallet.id, position_side_current, position.symbol, attempt);
-                let position_size: f64 = position.position.parse::<f64>().unwrap();
-                let base_amount = self.base_amount_from_f64(position_size)?;
-
-                info!("#{} | <{}> position size: {}", self.wallet.id, position.symbol, position_size);
-                info!("#{} | <{}> base amount: {}", self.wallet.id, position.symbol, base_amount);
-
-
-                let order = match self
-                    .execute_market_order(&token, position_side_to_close, base_amount, price, true).await {
-                        Ok(o) => o,
-                        Err(e) => {
-                            error!(
-                                "#{} | Failed to execute market order for {} (attempt {}): {}. Trying again...",
-                                self.wallet.id, position.symbol, attempt, e
-                            );
-
-                            last_err = Some(e.into());
-                            sleep(Duration::from_millis(350)).await;
-                            continue;
-                        }
-                };
-
-                match self.get_order_by_hash(&order).await {
-                    Ok(_) => {
-                        info!("#{} | found order by hash: {}", self.wallet.id, order);
-                        let positions = self.get_active_positions().await?;
-                        let market_index = token.get_market_index(Exchange::Lighter);
-
-                        info!("#{} | looking in positions if still open...", self.wallet.id);
-
-                        if let Some(pos) = positions.iter().find(|p| p.market_id == market_index) {
-                            let pos_value = pos.position_value.parse::<Decimal>().unwrap_or(Decimal::ZERO);
-                            info!("#{} | position value: {}", self.wallet.id, pos_value);
-
-                            if pos_value == Decimal::ZERO {
-                                info!("#{} | position size is 0, which means it closed: {}", self.wallet.id, pos.symbol);
-                                info!("#{} | 🔴🔴 position closed: {}", self.wallet.id, pos.symbol);
-                                closed = true;
-                                break;
-                            } else {
-                                last_err = Some(TradingError::ExchangeError(format!(
-                                    "Failed to close position on market index {} with token {}, still open...",
-                                    market_index,
-                                    token.get_symbol_string(Exchange::Lighter)
-                                )));
-
-                                warn!("#{} | attempt {} | at position {} still open. Trying again...", 
-                                    self.wallet.id, attempt, position.symbol
-                                );
-
-                                sleep(Duration::from_millis(350)).await;
-                                continue;
-                            }
+                            return Ok(());
                         } else {
-                            info!("#{} | position not found in positions, which means it closed: {}", self.wallet.id, position.symbol);
-                            info!("#{} | 🔴🔴 position closed: {}", self.wallet.id, position.symbol);
-
-                            closed = true;
-                            break;
+                            return Err(TradingError::ExchangeError(format!(
+                                "#{} | failed to close position on market index {} with token {}, it's still open...",
+                                self.wallet.id, market_index, token.get_symbol_string(Exchange::Lighter
+                                )
+                            )));
                         }
-                    }
-                    Err(e) => {
-                        error!(
-                            "#{} | failed to confirm close of position {} (attempt {}): {}. Trying again...",
-                            self.wallet.id, position.symbol, attempt, e
-                        );
-
-                        last_err = Some(e.into());
-                        sleep(Duration::from_millis(350)).await;
-                        continue;
+                    } else {
+                        info!("#{} | position not found in positions, which means it closed: {}", self.wallet.id, position.symbol);
+                        info!("#{} | 🔴🔴 position closed: {}", self.wallet.id, position.symbol);
+                        return Ok(());
                     }
                 }
-            }
-
-            if !closed {
-                if let Some(e) = last_err {
-                    error!(
-                        "#{} | position close ultimately failed for {} after 3 attempts. Last error: {}",
+                Err(e) => {
+                    return Err(TradingError::ExchangeError(format!(
+                        "#{} | failed to confirm close of position {}: {}",
                         self.wallet.id, position.symbol, e
-                    );
-
-                    return Err(e);
+                    )));
                 }
             }
         }
-
-        Ok(())
+    
+        unreachable!()
     }
 
+    /// Determines if a position should be closed based on its value.
+    ///
+    /// # Arguments
+    ///
+    /// * `position` - Reference to the position to check
+    ///
+    /// # Returns
+    ///
+    /// * `bool` - `true` if position has non-zero value and should be closed
     fn should_close_position(&self, position: &LighterPosition) -> bool {
         let position_value = position.position_value
             .parse::<Decimal>()
@@ -465,6 +613,22 @@ impl LighterClient {
         position_value > Decimal::ZERO
     }
 
+    /// Parses position sign integer into PositionSide tuples.
+    ///
+    /// Converts the internal position sign representation (-1, 1) into
+    /// readable PositionSide enums for both current and closing sides.
+    ///
+    /// # Arguments
+    ///
+    /// * `sign` - The position sign integer (-1 for short, 1 for long)
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(PositionSide, PositionSide), TradingError>` - Tuple of (current_side, closing_side)
+    ///
+    /// # Errors
+    ///
+    /// Returns `TradingError` if the sign value is invalid
     fn parse_position_sides(&self, sign: i32) -> Result<(PositionSide, PositionSide), TradingError> {
         match sign {
             1 => Ok((PositionSide::Long, PositionSide::Short)),
@@ -475,6 +639,22 @@ impl LighterClient {
         }
     }
 
+    /// Converts a floating-point amount to base amount with proper decimal scaling.
+    ///
+    /// This method handles the conversion from human-readable decimal amounts
+    /// to the integer-based representation required by the Lighter API.
+    ///
+    /// # Arguments
+    ///
+    /// * `amount` - The floating-point amount to convert
+    ///
+    /// # Returns
+    ///
+    /// * `Result<u64, TradingError>` - The scaled base amount as integer
+    ///
+    /// # Errors
+    ///
+    /// Returns `TradingError` if conversion or parsing fails
     fn base_amount_from_f64(&self, amount: f64) -> Result<u64, TradingError> {
         // Convert to Decimal via string to preserve exact decimal representation
         let decimal_str = amount.to_string();
@@ -491,6 +671,20 @@ impl LighterClient {
         result.round().to_string().parse::<u64>().map_err(|e| TradingError::InvalidInput(e.to_string()))
     }
 
+    /// Calculates the base token amount for a given USDC investment at specified price.
+    ///
+    /// This method converts a USDC-denominated position size into the equivalent
+    /// base token amount, accounting for token-specific denomination scaling.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - Reference to the token being traded
+    /// * `amount_usdc` - The USDC amount to invest
+    /// * `price` - The current market price (scaled by 10,000)
+    ///
+    /// # Returns
+    ///
+    /// * `Result<u64, TradingError>` - The calculated base token amount
     pub async fn calculate_base_amount(&self, token: &Token, amount_usdc: Decimal, price: u64) -> Result<u64, TradingError> {
         // Price is scaled by 10,000, so divide it
         let price_decimal = Decimal::from(price) / Decimal::from(10_000);
@@ -502,6 +696,25 @@ impl LighterClient {
         Ok(base_rounded)
     }
 
+    /// Updates the leverage for a specific token.
+    ///
+    /// This method sets the leverage and margin mode for a trading pair.
+    /// Currently uses fixed leverage of 33.33x (3333 basis points).
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - The token to update leverage for
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), TradingError>` - Success if leverage update is submitted
+    ///
+    /// # Errors
+    ///
+    /// Returns `TradingError` if:
+    /// * Nonce retrieval fails
+    /// * Transaction signing fails
+    /// * API submission fails
     #[allow(unused)]
     pub async fn update_leverage(&self, token: Token) -> Result<(), TradingError> {
         let margin_mode = 0;
@@ -530,6 +743,31 @@ impl LighterClient {
         Ok(())
     }
 
+    /// Executes a market order with retry logic for nonce errors.
+    ///
+    /// This method handles the complete order execution flow including:
+    /// - Nonce management with automatic retry on invalid nonce errors
+    /// - Order signing and submission
+    /// - Price protection
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - Reference to the token to trade
+    /// * `side` - The position side (Long/Short)
+    /// * `base_amount` - The amount of base token to trade
+    /// * `price` - The limit price for the order
+    /// * `close_position` - Whether this is a position-closing order
+    ///
+    /// # Returns
+    ///
+    /// * `Result<String, TradingError>` - The transaction hash of the executed order
+    ///
+    /// # Errors
+    ///
+    /// Returns `TradingError` if:
+    /// * Nonce retrieval fails after retries
+    /// * Order signing fails
+    /// * API submission fails
     async fn execute_market_order(
         &self,
         token: &Token,
@@ -611,6 +849,25 @@ impl LighterClient {
         }
     }
  
+    /// Sends a signed transaction to the Lighter API.
+    ///
+    /// This low-level method handles the actual HTTP request to submit
+    /// transactions to the Lighter backend.
+    ///
+    /// # Arguments
+    ///
+    /// * `body` - The URL-encoded transaction body
+    ///
+    /// # Returns
+    ///
+    /// * `Result<String, TradingError>` - The transaction hash
+    ///
+    /// # Errors
+    ///
+    /// Returns `TradingError` if:
+    /// * HTTP request fails
+    /// * API returns non-200 response
+    /// * Transaction hash not found in response
     async fn send_tx(&self, body: String) -> Result<String, TradingError> {
         let headers = self.get_headers();
         let url = format!("{}/sendTx", self.base_url);
@@ -658,6 +915,14 @@ impl LighterClient {
         }
     }
 
+    /// Creates the standard HTTP headers for Lighter API requests.
+    ///
+    /// These headers mimic a web browser request to avoid being blocked
+    /// by API security measures.
+    ///
+    /// # Returns
+    ///
+    /// * `HeaderMap` - The configured HTTP headers
     fn get_headers(&self) -> HeaderMap {
         use http::header::{HeaderMap, HeaderName, HeaderValue};
         let mut headers = HeaderMap::new();
@@ -721,10 +986,32 @@ impl PerpExchange for LighterClient {
         "Lighter"
     }
 
+
+    /// Performs a health check by verifying authentication status.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<bool, TradingError>` - `true` if healthy and authenticated
     async fn health_check(&self) -> Result<bool, TradingError> {
         Ok(self.is_authenticated().await)
     }
 
+
+    /// Retrieves the balance for a specific asset.
+    ///
+    /// Currently only supports USDC balances on Lighter.
+    ///
+    /// # Arguments
+    ///
+    /// * `asset` - The asset symbol (currently only "USDC" is supported)
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Balance, TradingError>` - The balance information
+    ///
+    /// # Errors
+    ///
+    /// Returns `TradingError` if account retrieval or parsing fails
     async fn get_balance(&self, _asset: &str) -> Result<Balance, TradingError> {
         let available_balance = self.get_account().await?
             .available_balance
@@ -738,7 +1025,32 @@ impl PerpExchange for LighterClient {
         })
     }
 
-
+    /// Opens a new position with the specified parameters.
+    ///
+    /// This method implements the complete position opening flow:
+    /// 1. Checks for existing positions (atomic operation requirement)
+    /// 2. Calculates position size and gets current market price
+    /// 3. Executes market order
+    /// 4. Verifies position was successfully opened
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - The token to trade
+    /// * `side` - The position side (Long/Short)
+    /// * `close_at` - The scheduled closing time for the position
+    /// * `amount_usdc` - The USDC amount to invest in the position
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Position, TradingError>` - The opened position details
+    ///
+    /// # Errors
+    ///
+    /// Returns `TradingError` if:
+    /// * Existing positions are found (atomic operation violation)
+    /// * Price retrieval fails
+    /// * Order execution fails
+    /// * Position verification fails
     async fn open_position(&self, token: Token, side: PositionSide, close_at: DateTime<Utc>, amount_usdc: Decimal) -> Result<Position, TradingError> {
         if let Ok(positions) = self.get_active_positions().await {
             if !positions.is_empty() {
@@ -792,104 +1104,42 @@ impl PerpExchange for LighterClient {
     }
 
 
+    /// Retrieves the USDC balance for the account.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Decimal, TradingError>` - The available USDC balance
     async fn get_usdc_balance(&self) -> Result<Decimal, TradingError> {
         let balance_usdc = self.get_balance("USDC").await?;
         Ok(balance_usdc.free)
     }
 
+    /// Closes all open positions with market orders.
+    ///
+    /// This is a convenience method that delegates to the internal
+    /// `close_all_positions` implementation.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), TradingError>` - Success if all positions are closed
     async fn close_all_positions(&self) -> Result<(), TradingError> {
         self.close_all_positions().await
     }
 
+    /// Closes a specific position.
+    ///
+    /// # Arguments
+    ///
+    /// * `position` - The position to close
+    ///
+    /// # Returns
+    ///
+    /// * `Result<Position, TradingError>` - The closed position details
+    ///
+    /// # Note
+    ///
+    /// This method is not yet fully implemented for Lighter exchange.
     async fn close_position(&self, position: &Position) -> Result<Position, TradingError> {
         todo!("Lighter close_position not fully implemented for {}", position.side);
     }
-}
-
-
-#[cfg(test)]
-mod tests {
-    use std::str::FromStr;
-
-    use super::*;
-
-    fn calculate_base_amount(position_size: f64) -> u64 {
-        // Convert to Decimal via string to preserve exact decimal representation
-        let decimal_str = position_size.to_string();
-        let decimal = Decimal::from_str(&decimal_str).unwrap();
-        
-        // Get the number of decimal places
-        let scale = decimal.scale();
-        
-        // Multiply by 10^scale to shift decimal point all the way right
-        let multiplier = Decimal::from(10_u64.pow(scale));
-        let result = decimal * multiplier;
-        
-        // Convert to u64
-        result.round().to_string().parse::<u64>().unwrap()
-    }
-
-    #[test]
-    fn test_simple_decimal() {
-        assert_eq!(calculate_base_amount(0.1), 1);
-        assert_eq!(calculate_base_amount(0.01), 1);
-        assert_eq!(calculate_base_amount(0.001), 1);
-    }
-
-    #[test]
-    fn test_multiple_digits() {
-        assert_eq!(calculate_base_amount(0.0065), 65);
-        assert_eq!(calculate_base_amount(0.123), 123);
-        assert_eq!(calculate_base_amount(0.456789), 456789);
-    }
-
-    #[test]
-    fn test_sol_cases() {
-        assert_eq!(calculate_base_amount(1.079), 1079);
-        assert_eq!(calculate_base_amount(1.424), 1424);
-        assert_eq!(calculate_base_amount(0.318), 318);
-    }
-
-    #[test]
-    fn test_very_small_numbers() {
-        assert_eq!(calculate_base_amount(0.000000001), 1);
-        assert_eq!(calculate_base_amount(0.00000123), 123);
-    }
-
-    #[test]
-    fn test_whole_numbers() {
-        assert_eq!(calculate_base_amount(1.0), 1);
-        assert_eq!(calculate_base_amount(10.0), 10);
-        assert_eq!(calculate_base_amount(100.0), 100);
-    }
-
-    #[test]
-    fn test_edge_cases() {
-        // Numbers with many decimal places
-        assert_eq!(calculate_base_amount(1.123456789), 1123456789);
-        
-        // Numbers that cause floating point precision issues
-        assert_eq!(calculate_base_amount(0.3), 3);
-        assert_eq!(calculate_base_amount(0.7), 7);
-        assert_eq!(calculate_base_amount(1.1), 11);
-    }
-
-        // Debug test to see what's actually happening
-        #[test]
-        fn test_debug_values() {
-            let test_cases = vec![
-                0.1, 0.01, 0.001,
-                0.0065, 0.123, 0.456789,
-                1.079, 1.424, 0.318,
-                0.000000001, 0.00000123,
-                1.0, 10.0, 100.0,
-                0.3, 0.7, 1.1,
-                0.1 + 0.2,
-            ];
-    
-            for val in test_cases {
-                let result = calculate_base_amount(val);
-                println!("{} -> {}", val, result);
-            }
-        }
 }

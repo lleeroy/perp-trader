@@ -172,20 +172,31 @@ impl TradingStrategy {
             ));
         }
 
-        // Shuffle wallet indices to randomly assign to long/short, as before
+        // Shuffle wallet indices to randomly assign to long/short
         let mut wallet_indices: Vec<usize> = (0..wallet_balances.len()).collect();
         wallet_indices.shuffle(&mut rng);
 
-        // Randomly split into long/short groups, ensuring at least 1 for each
-        let num_longs = rng.gen_range(1..wallet_balances.len());
+        // Ensure balanced split between long/short (at least 2 per side when possible)
+        let min_per_side = 2;
+        let max_per_side = wallet_balances.len() - min_per_side;
+        
+        // Generate a balanced split that ensures reasonable distribution
+        let num_longs = if wallet_balances.len() >= 4 {
+            // For 4+ wallets, ensure at least 2 per side
+            rng.gen_range(min_per_side..=max_per_side)
+        } else {
+            // For exactly 3 wallets, split 2 vs 1 (minimum case)
+            rng.gen_range(1..=2)
+        };
+        
         let long_indices = &wallet_indices[0..num_longs];
         let short_indices = &wallet_indices[num_longs..];
 
-        // Calculate side totals (for future normalization of allocations)
+        // Calculate side totals
         let long_total_balance: Decimal = long_indices.iter().map(|&i| wallet_balances[i].1).sum();
         let short_total_balance: Decimal = short_indices.iter().map(|&i| wallet_balances[i].1).sum();
 
-        // We'll use the minimum group total as the tradeable amount for both sides for neutrality
+        // Use the minimum group total as the tradeable amount for both sides for neutrality
         let tradeable_amount = long_total_balance.min(short_total_balance);
         let mut allocations = Vec::new();
 
@@ -197,13 +208,14 @@ impl TradingStrategy {
         // Generate a single leverage factor that will be applied to BOTH sides for neutrality
         let leverage = rng.gen_range(config.trading.min_leverage..=config.trading.max_leverage);
 
-        // Generate random allocations for longs
-        let mut long_side_randoms: Vec<f64> = long_indices.iter().map(|&i| random_factors[i]).collect();
+        // Generate allocations for longs
+        let long_side_randoms: Vec<f64> = long_indices.iter().map(|&i| random_factors[i]).collect();
         let long_side_sum: f64 = long_side_randoms.iter().sum();
+        
         for (&idx, &rf) in long_indices.iter().zip(long_side_randoms.iter()) {
             let (wallet_id, balance) = wallet_balances[idx];
             
-            // Assign this wallet a proportion of the SIDE's tradeable amount, proportional to random factor
+            // Assign this wallet a proportion of the SIDE's tradeable amount
             let proportion = rf / long_side_sum;
             let base_usdc_amount = Decimal::from_f64(tradeable_amount.to_string().parse::<f64>().unwrap() * proportion).unwrap();
             
@@ -227,9 +239,10 @@ impl TradingStrategy {
             });
         }
 
-        // Same for shorts - use the SAME leverage factor
-        let mut short_side_randoms: Vec<f64> = short_indices.iter().map(|&i| random_factors[i]).collect();
+        // Generate allocations for shorts
+        let short_side_randoms: Vec<f64> = short_indices.iter().map(|&i| random_factors[i]).collect();
         let short_side_sum: f64 = short_side_randoms.iter().sum();
+        
         for (&idx, &rf) in short_indices.iter().zip(short_side_randoms.iter()) {
             let (wallet_id, balance) = wallet_balances[idx];
             
@@ -261,7 +274,7 @@ impl TradingStrategy {
             .map(|a| a.usdc_amount)
             .sum();
         let short_total: Decimal = allocations.iter()
-            .filter(|a: &&WalletAllocation| a.side == PositionSide::Short)
+            .filter(|a| a.side == PositionSide::Short)
             .map(|a| a.usdc_amount)
             .sum();
         
@@ -273,6 +286,7 @@ impl TradingStrategy {
         }
         
         info!("  Total LONG: {:.2} USDC | Total SHORT: {:.2} USDC", long_total, short_total);
+        info!("  Distribution: {} longs, {} shorts", long_indices.len(), short_indices.len());
 
         Ok(allocations)
     }

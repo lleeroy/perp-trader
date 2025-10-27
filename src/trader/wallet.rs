@@ -22,15 +22,13 @@ pub struct Wallet {
 pub struct WalletTradingClient {
     pub wallet: Wallet,
     pub lighter_client: LighterClient,
-    pub backpack_client: BackpackClient,
 }
 
 impl WalletTradingClient {
     pub async fn new(wallet: Wallet) -> Result<Self, TradingError> {
         let lighter_client = LighterClient::new(&wallet).await?;
-        let backpack_client = BackpackClient::new(&wallet);
 
-        Ok(WalletTradingClient { wallet, lighter_client, backpack_client })
+        Ok(WalletTradingClient { wallet, lighter_client })
     }
 }
 

@@ -19,6 +19,7 @@ use anyhow::{Result, Context};
 use inquire::{Select, Confirm};
 use rand::Rng;
 use tokio::time;
+
 use crate::trader::client::TraderClient;
 use colored::*;
 use std::io::Write;
@@ -163,7 +164,7 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to create trader client")?;
 
-    // Execute selected action
+
     match action {
         Action::CloseAll => {
             info!("Closing all active strategies...");
@@ -177,14 +178,12 @@ async fn main() -> Result<()> {
             
             loop {
                 let loop_sleep_minutes = rng.gen_range(5..=20);
-                let duration_minutes = rng.gen_range(60..=240);
-                info!("#{} | Duration set to: {} minutes", i, duration_minutes);
                 info!("#{} | Strategy starting...", i);
 
                 if is_backpack {
-                    trader_client.farm_points_on_backpack_from_multiple_wallets(duration_minutes).await?;
+                    trader_client.farm_points_on_backpack_from_multiple_wallets().await?;
                 } else {
-                    trader_client.farm_points_on_lighter_from_multiple_wallets(duration_minutes).await?;
+                    trader_client.farm_points_on_lighter_from_multiple_wallets().await?;
                 }
 
                 let active_strategies = trader_client.get_active_strategies().await?;
