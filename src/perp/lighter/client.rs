@@ -1,3 +1,4 @@
+use std::str::FromStr;
 use std::time::Duration;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -252,10 +253,9 @@ impl LighterClient {
                 let price_f64 = latest_candlestick["close"].as_f64().unwrap();
                 let price_decimal = Decimal::from_f64(price_f64).unwrap();
 
-
                 let adjusted_price = match side {
-                    PositionSide::Short => price_decimal * Decimal::from_f64(0.99).unwrap(),
-                    PositionSide::Long => price_decimal * Decimal::from_f64(1.01).unwrap(),
+                    PositionSide::Short => price_decimal * Decimal::from_f64(0.995).unwrap(),
+                    PositionSide::Long => price_decimal * Decimal::from_f64(1.005).unwrap(),
                 };
 
                 // Use token's price denomination to scale the price correctly
@@ -371,23 +371,7 @@ impl LighterClient {
 
                     info!("#{} | found open {} position to close: {} (attempt {})", self.wallet.id, position_side, position.symbol, attempt);
                     let position_size: f64 = position.position.parse::<f64>().unwrap();
-
-                    // Converts fractional position sizes to whole-number base amounts by shifting the decimal to the right as needed:
-                    // 0.1           -> 1
-                    // 0.0065        -> 65
-                    // 0.000000001   -> 1
-                    // This logic multiplies the position_size by 10 repeatedly until its fractional part is essentially gone,
-                    // preserving up to all significant digits. It does NOT round the result, it truncates.
-                    let base_amount = {
-                        let mut base = position_size;
-                        let mut digits = 0u32;
-                        // Move decimal right until we have a non-fractional number or until limit to avoid infinite loops with tiny values
-                        while base.fract() != 0.0 && digits < 18 {
-                            base *= 10.0;
-                            digits += 1;
-                        }
-                        base.trunc() as u64
-                    };
+                    let base_amount = self.base_amount_from_f64(position_size)?;
 
                     info!("#{} | <{}> position size: {}", self.wallet.id, position.symbol, position_size);
                     info!("#{} | <{}> base amount: {}", self.wallet.id, position.symbol, base_amount);
@@ -459,12 +443,30 @@ impl LighterClient {
                             "#{} | position close ultimately failed for {} after 3 attempts. Last error: {}",
                             self.wallet.id, position.symbol, e
                         );
+
+                        return Err(e);
                     }
                 }
             }
         }
 
         Ok(())
+    }
+
+    fn base_amount_from_f64(&self, amount: f64) -> Result<u64, TradingError> {
+        // Convert to Decimal via string to preserve exact decimal representation
+        let decimal_str = amount.to_string();
+        let decimal = Decimal::from_str(&decimal_str).unwrap();
+        
+        // Get the number of decimal places
+        let scale = decimal.scale();
+        
+        // Multiply by 10^scale to shift decimal point all the way right
+        let multiplier = Decimal::from(10_u64.pow(scale));
+        let result = decimal * multiplier;
+        
+        // Convert to u64
+        result.round().to_string().parse::<u64>().map_err(|e| TradingError::InvalidInput(e.to_string()))
     }
 
     pub async fn calculate_base_amount(&self, token: &Token, amount_usdc: Decimal, price: u64) -> Result<u64, TradingError> {
@@ -551,9 +553,9 @@ impl LighterClient {
                 order.tx_info.nonce,
             )?;
 
-            info!("#{} | Order signed: {}", self.wallet.id, order_signed);
+            info!("#{} | order signed: {}", self.wallet.id, order_signed);
             let tx_info_encoded = urlencoding::encode(&order_signed);
-
+            
             let body = format!(
                 "tx_type={}&tx_info={}&price_protection={}",
                 TX_TYPE_CREATE_ORDER,
@@ -782,3 +784,90 @@ impl PerpExchange for LighterClient {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use super::*;
+
+    fn calculate_base_amount(position_size: f64) -> u64 {
+        // Convert to Decimal via string to preserve exact decimal representation
+        let decimal_str = position_size.to_string();
+        let decimal = Decimal::from_str(&decimal_str).unwrap();
+        
+        // Get the number of decimal places
+        let scale = decimal.scale();
+        
+        // Multiply by 10^scale to shift decimal point all the way right
+        let multiplier = Decimal::from(10_u64.pow(scale));
+        let result = decimal * multiplier;
+        
+        // Convert to u64
+        result.round().to_string().parse::<u64>().unwrap()
+    }
+
+    #[test]
+    fn test_simple_decimal() {
+        assert_eq!(calculate_base_amount(0.1), 1);
+        assert_eq!(calculate_base_amount(0.01), 1);
+        assert_eq!(calculate_base_amount(0.001), 1);
+    }
+
+    #[test]
+    fn test_multiple_digits() {
+        assert_eq!(calculate_base_amount(0.0065), 65);
+        assert_eq!(calculate_base_amount(0.123), 123);
+        assert_eq!(calculate_base_amount(0.456789), 456789);
+    }
+
+    #[test]
+    fn test_sol_cases() {
+        assert_eq!(calculate_base_amount(1.079), 1079);
+        assert_eq!(calculate_base_amount(1.424), 1424);
+        assert_eq!(calculate_base_amount(0.318), 318);
+    }
+
+    #[test]
+    fn test_very_small_numbers() {
+        assert_eq!(calculate_base_amount(0.000000001), 1);
+        assert_eq!(calculate_base_amount(0.00000123), 123);
+    }
+
+    #[test]
+    fn test_whole_numbers() {
+        assert_eq!(calculate_base_amount(1.0), 1);
+        assert_eq!(calculate_base_amount(10.0), 10);
+        assert_eq!(calculate_base_amount(100.0), 100);
+    }
+
+    #[test]
+    fn test_edge_cases() {
+        // Numbers with many decimal places
+        assert_eq!(calculate_base_amount(1.123456789), 1123456789);
+        
+        // Numbers that cause floating point precision issues
+        assert_eq!(calculate_base_amount(0.3), 3);
+        assert_eq!(calculate_base_amount(0.7), 7);
+        assert_eq!(calculate_base_amount(1.1), 11);
+    }
+
+        // Debug test to see what's actually happening
+        #[test]
+        fn test_debug_values() {
+            let test_cases = vec![
+                0.1, 0.01, 0.001,
+                0.0065, 0.123, 0.456789,
+                1.079, 1.424, 0.318,
+                0.000000001, 0.00000123,
+                1.0, 10.0, 100.0,
+                0.3, 0.7, 1.1,
+                0.1 + 0.2,
+            ];
+    
+            for val in test_cases {
+                let result = calculate_base_amount(val);
+                println!("{} -> {}", val, result);
+            }
+        }
+}

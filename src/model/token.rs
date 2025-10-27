@@ -1,5 +1,4 @@
 use rust_decimal::Decimal;
-
 use crate::model::Exchange;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -81,20 +80,19 @@ impl Token {
     }
 
     pub fn get_supported_tokens() -> Vec<Token> {
-        vec![Self::eth(), Self::sol(), Self::bnb()]
+        vec![Self::sol(), Self::bnb(), Self::hype(), Self::aave(), Self::xrp(), Self::ena()]
     }
 
     /// Returns the price denomination (how much to multiply the price by)
     pub fn get_price_denomination(&self) -> f64 {
         match self.symbol {
-            SupportedToken::ETH => 100.0,         // 6 digits total
-            SupportedToken::SOL => 1_000.0,      // 7 digits total
-            SupportedToken::BNB => 10_000.0,      // 8 digits total
+            SupportedToken::ETH => 100.0,   
+            SupportedToken::SOL => 1_000.0,      
+            SupportedToken::BNB => 10_000.0,      
             SupportedToken::HYPE => 10_000.0,
-            SupportedToken::XRP => 10_000.0,
-            SupportedToken::AAVE => 10_000.0,
-            SupportedToken::ENA => 10_000.0,
-            _ => 1.0,
+            SupportedToken::XRP => 1_000_000.0,
+            SupportedToken::AAVE => 1_000.0,
+            SupportedToken::ENA => 100_000.0,
         }
     }
 
@@ -102,14 +100,13 @@ impl Token {
     /// This is specific to how each token is represented on the exchange
     pub fn get_denomination(&self) -> Decimal {
         match self.symbol {
-            SupportedToken::ETH => Decimal::from(100),   // was 100_000
-            SupportedToken::BNB => Decimal::from(100),      // was 10_000
-            SupportedToken::SOL => Decimal::from(100),    // correct
+            SupportedToken::ETH => Decimal::from(100),  
+            SupportedToken::BNB => Decimal::from(100),      
+            SupportedToken::SOL => Decimal::from(100),   
             SupportedToken::HYPE => Decimal::from(100),
             SupportedToken::XRP => Decimal::from(100),
             SupportedToken::AAVE => Decimal::from(100),
             SupportedToken::ENA => Decimal::from(100),
-            _ => Decimal::from(1),
         } 
     }
 

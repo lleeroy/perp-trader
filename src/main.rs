@@ -9,6 +9,8 @@ mod request;
 mod trader;
 mod storage;
 mod helpers;
+mod alert;
+mod test;
 
 use std::fs::File;
 use std::io::BufReader;
@@ -16,7 +18,6 @@ use anyhow::{Result, Context};
 use inquire::{Select, Confirm};
 use rand::Rng;
 use crate::config::AppConfig;
-use crate::perp::PerpExchange;
 use crate::trader::client::TraderClient;
 use colored::*;
 use std::io::Write;
@@ -45,7 +46,6 @@ fn load_all_wallet_ids() -> Result<Vec<u8>> {
 }
 
 
-
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logger with custom formatter
@@ -70,29 +70,20 @@ async fn main() -> Result<()> {
                 record.args()
             )
         })
-    .init();
+        .init();
 
     info!("🚀 Starting perp-trader application...");
 
-    // let wallet = trader::wallet::Wallet::load_from_json(3)?;
-    // let client = perp::lighter::client::LighterClient::new(&wallet).await?;
-
-    // let token = model::token::Token::bnb();
+    // let wallet = trader::wallet::Wallet::load_from_json(2)?;
+    // let trading_client = trader::wallet::WalletTradingClient::new(wallet).await?;
+    // let token = model::token::Token::ena();
     // let side = model::PositionSide::Long;
-    // let close_at = chrono::Utc::now() + chrono::Duration::minutes(1);
+    // let close_at = chrono::Utc::now()+chrono::Duration::minutes(60);
     // let amount_usdc = rust_decimal::Decimal::from(10);
-    // client.open_position(token, side, close_at, amount_usdc).await?;
-    // client.close_all_positions().await?;
 
-    // loop {};
+    // perp::PerpExchange::open_position(&trading_client.lighter_client, token, side, close_at, amount_usdc).await?;
+    // perp::PerpExchange::close_all_positions(&trading_client.lighter_client).await?;
 
-    // for token in model::token::Token::get_supported_tokens() {
-    //     let token_price = client.get_market_price(&token, model::PositionSide::Long).await?;
-    //     println!("{} price: {:.2} USDC", token.get_symbol_string(model::Exchange::Lighter), token_price);
-    //     let base_amount = client.calculate_base_amount(&token, amount_usdc, token_price).await?;
-    //     println!("{} base amount: {:.2}", token.get_symbol_string(model::Exchange::Lighter), base_amount);
-    // }
-    // loop {};
 
     // Load configuration
     let config = AppConfig::load()?;
@@ -111,29 +102,52 @@ async fn main() -> Result<()> {
     }
     
     println!("\n╔══════════════════════════════════════════════════════════════╗");
-    println!("║              PERPETUAL FUTURES POINT FARMING                ║");
+    println!("║              PERPETUAL FUTURES POINT FARMING                 ║");
     println!("╚══════════════════════════════════════════════════════════════╝");
     println!("\n✅ Connected Wallets: {}", wallet_ids.len());
     println!("   Wallet IDs: {:?}\n", wallet_ids);
 
+    // Create database connection pool
+    info!("🔌 Connecting to database...");
+    let pool = storage::init_pool(&config).await?;
+    info!("✅ Database connected successfully");
+
     // Interactive menu for exchange selection
+    println!("\n{}", "FARMING STRATEGIES:".bold());
     let options = vec![
         "🎒 Farm points on Backpack",
         "💡 Farm points on Lighter",
+        "🛑 Close all active strategies",
     ];
 
-    let selection = Select::new("Select farming strategy:", options.clone())
+    let selection = Select::new("Select operation:", options.clone())
         .prompt()
         .context("Failed to get user selection")?;
 
-    let (_, is_backpack) = match selection {
-        s if s == options[0] => ("Backpack", true),
-        s if s == options[1] => ("Lighter", false),
-        _ => unreachable!(),
+    enum Action {
+        FarmBackpack,
+        FarmLighter,
+        CloseAll,
+    }
+
+    let action = match selection {
+        s if s == options[0] => Action::FarmBackpack,
+        s if s == options[1] => Action::FarmLighter,
+        s if s == options[2] => Action::CloseAll,
+        _ => {
+            warn!("Invalid selection");
+            return Ok(());
+        }
     };
 
     // Confirm before proceeding
-    let should_continue = Confirm::new("Do you want to continue?")
+    let confirmation_message = match action {
+        Action::FarmBackpack => "Start farming on Backpack?",
+        Action::FarmLighter => "Start farming on Lighter?",
+        Action::CloseAll => "Close all active strategies?",
+    };
+
+    let should_continue = Confirm::new(confirmation_message)
         .with_default(false)
         .prompt()
         .context("Failed to get confirmation")?;
@@ -143,35 +157,43 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Create database connection pool
-    info!("🔌 Connecting to database...");
-    let pool = storage::init_pool(&config).await?;
-    info!("✅ Database connected successfully");
-
-    // Create trader client
-    info!("🔧 Initializing trader client with {} wallets...", wallet_ids.len());
-    let trader_client = TraderClient::new(wallet_ids.clone(), pool)
+    // Initialize trader client
+    info!("Initializing trader client with {} wallets...", wallet_ids.len());
+    let trader_client = TraderClient::new(wallet_ids.clone(), pool.clone())
         .await
         .context("Failed to create trader client")?;
-    
     info!("✅ Trader client initialized");
-    
-    // Generate random duration between 1-60 minutes
-    let mut rng = rand::thread_rng();
-    let duration_minutes = rng.gen_range(1..=3);
 
+    // Execute selected action
+    match action {
+        Action::CloseAll => {
+            info!("Closing all active strategies...");
+            trader_client.close_all_active_strategies().await?;
+            info!("✅ All strategies closed");
+        }
+        Action::FarmBackpack | Action::FarmLighter => {
+            let is_backpack = matches!(action, Action::FarmBackpack);
+            
+            for i in 0..10 {
+                let mut rng = rand::thread_rng();
+                let duration_minutes = rng.gen_range(60..=180);
+                info!("#{} | Duration set to: {} minutes", i, duration_minutes);
+                info!("#{} | Strategy starting...", i);
 
-    // Execute selected strategy
-    if is_backpack {
-        trader_client.farm_points_on_backpack_from_multiple_wallets(duration_minutes).await?
-    } else {
-        trader_client.farm_points_on_lighter_from_multiple_wallets(duration_minutes).await?
-    };
+                // Execute selected strategy
+                if is_backpack {
+                    trader_client.farm_points_on_backpack_from_multiple_wallets(duration_minutes).await?;
+                } else {
+                    trader_client.farm_points_on_lighter_from_multiple_wallets(duration_minutes).await?;
+                }
 
-    let active_strategies = trader_client.get_active_strategies().await?;
+                let active_strategies = trader_client.get_active_strategies().await?;
 
-    if !active_strategies.is_empty() {
-        trader_client.monitor_and_close_strategies(active_strategies).await?;
+                if !active_strategies.is_empty() {
+                    trader_client.monitor_and_close_strategies(active_strategies).await?;
+                }
+            }
+        }
     }
 
     Ok(())

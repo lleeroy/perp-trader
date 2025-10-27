@@ -1,20 +1,14 @@
 use crate::{
-    error::TradingError,
-    model::{
+    alert::telegram::TelegramAlerter, error::TradingError, model::{
 		position::{Position, PositionSide, PositionStatus},
 		token::Token, Exchange,
-	},
-	perp::{backpack::BackpackClient, lighter::client::LighterClient, PerpExchange},
-	storage::{
+	}, perp::{backpack::BackpackClient, lighter::client::LighterClient, PerpExchange}, storage::{
 		storage_position::PositionStorage,
 		storage_strategy::{StrategyMetadata, StrategyStorage},
-	},
-	trader::{strategy::{StrategyStatus, TradingStrategy}, wallet::{Wallet, WalletTradingClient}},
+	}, trader::{strategy::{StrategyStatus, TradingStrategy}, wallet::{Wallet, WalletTradingClient}}
 };
 
-use anyhow::Context;
 use chrono::{DateTime, Duration, Utc};
-use inquire::Confirm;
 use rust_decimal::Decimal;
 use rand::{seq::SliceRandom};
 use sqlx::PgPool;
@@ -112,8 +106,9 @@ impl TraderClient {
         // Display strategies being monitored
         info!("📋 Monitoring {} strategies:", strategies.len());
         for strategy in &strategies {
-            info!("🎯 Strategy {} | Token: {} | Wallets: {:?} | Close at: {}", 
-                strategy.id, strategy.token_symbol, strategy.wallet_ids, strategy.close_at);
+            let close_at_local = strategy.close_at + chrono::Duration::hours(8);
+            info!("🎯 Strategy {} | Token: {} | Wallets: {:?} | Close at (your local, UTC+8): {}", 
+                strategy.id, strategy.token_symbol, strategy.wallet_ids, close_at_local.format("%H:%M"));
         }
 
 		// Wait until the earliest close time
@@ -125,8 +120,8 @@ impl TraderClient {
 					.unwrap_or(TokioDuration::from_secs(0));
 
 				info!(
-					"⏳ Waiting {} seconds until first strategy close time...",
-					wait_duration.as_secs()
+					"⏳ Waiting {} minutes until first strategy close time...",
+					wait_duration.as_secs() / 60 as u64
 				);
 
 				self.wait_until(earliest_close).await;
@@ -168,6 +163,16 @@ impl TraderClient {
                 Err(e) => {
                     error!("❌ Failed to close all positions: {}", e);
                     has_failures = true;
+                    let strategy_clone = strategy.clone();
+
+                    tokio::spawn(async move {
+                        let alerter = TelegramAlerter::new();
+                        let error = TradingError::SigningError("Signing error".to_string());
+                        
+                        if let Err(e) = alerter.send_strategy_error_alert(&strategy_clone, &error).await {
+                            error!("{}", format!("❌ Failed to send strategy error alert: {}", e).on_red());
+                        }
+                    });
                 }
             }
 
@@ -297,7 +302,17 @@ impl TraderClient {
         info!("   Token: {}", strategy.token_symbol);
         info!("   Long positions: {} | Total size: {}", strategy.longs.len(), strategy.longs_size);
         info!("   Short positions: {} | Total size: {}", strategy.shorts.len(), strategy.shorts_size);
-        info!("   Close at: {}", strategy.close_at);
+
+        let close_at_local = strategy.close_at + chrono::Duration::hours(8);
+        let now_local = Utc::now() + chrono::Duration::hours(8);
+        let minutes_from_now = ((close_at_local - now_local).num_minutes()).max(0);
+
+        info!(
+            "   Close at (your local, UTC+8): {} ({}), in {} minutes",
+            close_at_local.format("%a %H:%M"),
+            close_at_local.format("%Y-%m-%d"),
+            minutes_from_now
+        );
         
         Ok(strategy)
     }
@@ -339,7 +354,7 @@ impl TraderClient {
         let allocations = TradingStrategy::generate_balanced_allocations(&wallet_balances)?;
 
         // Step 3: Randomly select a token to trade
-        let selected_token = Token::bnb();
+        let selected_token = self.select_random_token()?;
         let token_symbol = selected_token.symbol.to_string();
         info!("🎲 Selected token: {:?}", selected_token.symbol);
 
@@ -360,15 +375,15 @@ impl TraderClient {
         );
 
         // Ask for final confirmation before opening positions
-        let should_proceed = Confirm::new("Do you agree with this strategy and want to proceed with opening positions?")
-            .with_default(false)
-            .prompt()
-            .context("Failed to get final confirmation")?;
+        // let should_proceed = Confirm::new("Do you agree with this strategy and want to proceed with opening positions?")
+        //     .with_default(false)
+        //     .prompt()
+        //     .context("Failed to get final confirmation")?;
 
-        if !should_proceed {
-            warn!("❌ Strategy cancelled. No positions were opened.");
-            return Err(TradingError::InvalidInput("Strategy cancelled. No positions were opened.".into()));
-        }
+        // if !should_proceed {
+        //     warn!("❌ Strategy cancelled. No positions were opened.");
+        //     return Err(TradingError::InvalidInput("Strategy cancelled. No positions were opened.".into()));
+        // }
         
         for allocation in allocations {
             let token = selected_token.clone();
@@ -478,7 +493,16 @@ impl TraderClient {
         info!("   Token: {}", strategy.token_symbol);
         info!("   Long positions: {} | Total size: {:.2} USDC", strategy.longs.len(), strategy.longs_size);
         info!("   Short positions: {} | Total size: {:.2} USDC", strategy.shorts.len(), strategy.shorts_size);
-        info!("   Close at: {}", strategy.close_at);    
+        let close_at_local = strategy.close_at + chrono::Duration::hours(8);
+        let now_local = Utc::now() + chrono::Duration::hours(8);
+        let minutes_from_now = ((close_at_local - now_local).num_minutes()).max(0);
+        
+        info!(
+            "   Close at (your local, UTC+8): {} ({}), in {} minutes",
+            close_at_local.format("%a %H:%M"),
+            close_at_local.format("%Y-%m-%d"),
+            minutes_from_now
+        );
         
         Ok(strategy)
     }

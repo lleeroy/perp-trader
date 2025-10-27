@@ -57,6 +57,10 @@ pub struct MonitoringConfig {
     /// Timeout for exchange API calls (in seconds)
     #[serde(default = "default_api_timeout_seconds")]
     pub api_timeout_seconds: u64,
+    /// Telegram chat ID
+    pub telegram_chat_id: i64,
+    /// Telegram bot token
+    pub telegram_bot_token: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
