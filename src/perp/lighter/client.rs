@@ -55,38 +55,34 @@ pub struct LighterClient {
 impl LighterClient {
     /// Creates a new `LighterClient` instance using the provided wallet credentials.
     ///
-    /// This method performs the complete initialization process:
-    /// 1. Retrieves the account index from the Lighter API
-    /// 2. Generates and registers a new API key pair
-    /// 3. Initializes the signing client for transaction authorization
-    ///
-    /// # Arguments
-    ///
-    /// * `wallet` - Reference to the user's wallet containing API secrets and Ethereum private key
-    ///
-    /// # Returns
-    ///
-    /// * `Result<Self, TradingError>` - A fully initialized LighterClient ready for trading operations
-    ///
-    /// # Errors
-    ///
-    /// Returns `TradingError` if:
-    /// * Account index cannot be retrieved
-    /// * API key registration fails
-    /// * Signer client initialization fails
+    /// This method checks if an API key already exists in the wallet and reuses it if available.
+    /// Otherwise, it performs the complete registration process.
     pub async fn new(wallet: &Wallet) -> Result<Self, TradingError> {
-        let base_url = DEFAULT_BASE_URL.to_string();     // Default base URL
-        let api_key_index = DEFAULT_API_KEY_INDEX;          // Default API key index
+        let base_url = DEFAULT_BASE_URL.to_string();
+        let api_key_index = DEFAULT_API_KEY_INDEX;
         let account_index = Self::get_account_index(&base_url, wallet).await?;
 
-        let (api_private_key, api_public_key) = Self::register_new_api_key(
-            &base_url, 
-            wallet, 
-            account_index, 
-            api_key_index
-        ).await?;
+        let (api_private_key, api_public_key) = if !wallet.lighter_api_key.is_empty() {
+            info!("#{} | Using existing API key from wallet", wallet.id);
+            
+            // Verify the existing key is still valid
+            if Self::verify_existing_api_key(&base_url, wallet, &wallet.lighter_api_key, account_index).await? {
+                let existing_private_key = wallet.lighter_api_key.clone();
+                let (_, existing_public_key) = SignerClient::create_api_key(&existing_private_key)
+                    .map_err(|e| TradingError::SigningError(format!("Failed to derive public key from existing private key: {}", e)))?;
+                
+                (existing_private_key, existing_public_key)
+            } else {
+                // Existing key is invalid, register a new one
+                info!("#{} | Existing API key is invalid, registering new key...", wallet.id);
+                Self::register_new_api_key(&base_url, wallet, account_index, api_key_index).await?
+            }
+        } else {
+            // No existing API key, register a new one
+            info!("#{} | No existing API key found, registering new key...", wallet.id);
+            Self::register_new_api_key(&base_url, wallet, account_index, api_key_index).await?
+        };
 
-        
         // Create signer client with the API key
         let signer_client = SignerClient::new(
             &base_url,
@@ -107,47 +103,9 @@ impl LighterClient {
         })
     }
 
-
-    /// Checks if the client is properly authenticated with the Lighter API.
-    ///
-    /// This method verifies that the API credentials are valid and the client
-    /// can successfully access account information.
-    ///
-    /// # Returns
-    ///
-    /// * `bool` - `true` if authentication is successful, `false` otherwise
-    #[allow(unused)]
-    pub async fn is_authenticated(&self) -> bool {
-        self.get_account().await.is_ok()
-    }
-
-    
     /// Registers a new API key with the Lighter protocol using Ethereum wallet signature.
     ///
-    /// This method handles the complete API key registration flow:
-    /// 1. Generates a new ECDSA key pair for API authentication
-    /// 2. Retrieves the current nonce for the account
-    /// 3. Signs the API key registration transaction with the Ethereum wallet
-    /// 4. Submits the signed transaction to the Lighter API
-    ///
-    /// # Arguments
-    ///
-    /// * `base_url` - The base URL of the Lighter API
-    /// * `wallet` - Reference to the wallet containing Ethereum credentials
-    /// * `account_index` - The account index to register the API key for
-    /// * `api_key_index` - The index for the new API key
-    ///
-    /// # Returns
-    ///
-    /// * `Result<(String, String), TradingError>` - Tuple containing (private_key, public_key)
-    ///
-    /// # Errors
-    ///
-    /// Returns `TradingError` if:
-    /// * Nonce retrieval fails
-    /// * Message signing fails
-    /// * Transaction submission fails
-    /// * API returns non-200 response
+    /// This method now also updates the wallet with the new API key for future reuse.
     async fn register_new_api_key(
         base_url: &str,
         wallet: &Wallet,
@@ -181,7 +139,6 @@ impl LighterClient {
         info!("#{} | Got nonce: {}", wallet.id, nonce);
         
         // Step 3: Create a temporary SignerClient with the NEW API key to sign the registration
-        // This is the key insight: we use the NEW key to sign its own registration
         let temp_signer = SignerClient::new(
             base_url,
             &api_private_key,
@@ -255,7 +212,106 @@ impl LighterClient {
         }
         
         info!("#{} | API key registered successfully!", wallet.id);
+        
+        // Step 10: Update the wallet with the new API key for future reuse
+        // Note: This would require a mutable reference to wallet or a way to update the JSON file
+        // You'll need to implement this part based on how your wallet storage works
+        Self::save_api_key_to_wallet(wallet, &api_private_key).await?;
+        
         Ok((api_private_key, api_public_key))
+    }
+
+    /// Saves the API key to the wallet storage for future reuse.
+    ///
+    /// This method should update the wallet's JSON file with the new API key.
+    async fn save_api_key_to_wallet(wallet: &Wallet, api_private_key: &str) -> Result<(), TradingError> {
+        // Implementation depends on how you store wallet data
+        // Here's a conceptual implementation:
+        
+        // 1. Read the existing wallet JSON file
+        // 2. Find the wallet by ID and update the lighter_api_key field
+        // 3. Write the updated JSON back to the file
+        info!("#{} | Saving API key to wallet storage for future reuse", wallet.id);
+                
+        let wallets_path = "api-keys.json";
+        let mut wallets: std::collections::HashMap<String, serde_json::Value> = serde_json::from_str(
+            &std::fs::read_to_string(wallets_path).map_err(|e| TradingError::InvalidInput(e.to_string()))?
+        ).map_err(|e| TradingError::InvalidInput(e.to_string()))?;
+        
+        if let Some(wallet_data) = wallets.get_mut(&wallet.id.to_string()) {
+            if let Some(obj) = wallet_data.as_object_mut() {
+                obj.insert("lighter_api_key".to_string(), serde_json::Value::String(api_private_key.to_string()));
+            }
+        }
+        
+        std::fs::write(
+            wallets_path, 
+            serde_json::to_string_pretty(&wallets).map_err(|e| TradingError::InvalidInput(e.to_string()))?
+        ).map_err(|e| TradingError::InvalidInput(e.to_string()))?;
+
+        
+        // For now, we'll just log that we would save it
+        info!("#{} | API key would be saved to wallet: {}", wallet.id, api_private_key);
+        
+        Ok(())
+    }
+
+    /// Checks if the client is authenticated by verifying the account information.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<bool, TradingError>` - `true` if authenticated, `false` otherwise
+    ///
+    /// # Errors
+    ///
+    pub async fn is_authenticated(&self) -> Result<bool, TradingError> {
+        self.get_account().await.map(|_| true).map_err(|e| TradingError::InvalidInput(e.to_string()))
+    }
+
+
+    /// Verifies that an existing API key is still valid by testing authentication.
+    async fn verify_existing_api_key(
+        base_url: &str,
+        wallet: &Wallet,
+        api_private_key: &str,
+        account_index: u32,
+    ) -> Result<bool, TradingError> {
+        info!("#{} | Verifying existing API key...", wallet.id);
+        
+        // Try to create a signer client with the existing key
+        let signer_client = match SignerClient::new(
+            base_url,
+            api_private_key,
+            DEFAULT_API_KEY_INDEX,
+            account_index as i64,
+            None,
+            None,
+        ) {
+            Ok(client) => client,
+            Err(_) => return Ok(false),
+        };
+
+        // Try to make a simple API call to verify the key works
+        let client = LighterClient {
+            wallet: wallet.clone(),
+            account_index,
+            base_url: base_url.to_string(),
+            api_private_key: api_private_key.to_string(),
+            api_public_key: "".to_string(), // We don't need this for verification
+            signer_client,
+        };
+
+        // Try to get account info - if this succeeds, the key is valid
+        match client.get_account().await {
+            Ok(_) => {
+                info!("#{} | Existing API key is valid", wallet.id);
+                Ok(true)
+            }
+            Err(_) => {
+                info!("#{} | Existing API key is invalid", wallet.id);
+                Ok(false)
+            }
+        }
     }
 
 
@@ -993,7 +1049,7 @@ impl PerpExchange for LighterClient {
     ///
     /// * `Result<bool, TradingError>` - `true` if healthy and authenticated
     async fn health_check(&self) -> Result<bool, TradingError> {
-        Ok(self.is_authenticated().await)
+        self.is_authenticated().await
     }
 
 

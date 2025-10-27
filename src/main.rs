@@ -20,7 +20,7 @@ use inquire::{Select, Confirm};
 use rand::Rng;
 use tokio::time;
 
-use crate::trader::client::TraderClient;
+use crate::{perp::PerpExchange, trader::client::TraderClient};
 use colored::*;
 use std::io::Write;
 

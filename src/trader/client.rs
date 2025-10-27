@@ -635,6 +635,7 @@ impl TraderClient {
                 }
             }
         }
+        
         Ok(())
     }
 

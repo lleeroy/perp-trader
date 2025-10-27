@@ -2,7 +2,7 @@ use std::{fs::File, io::BufReader};
 use serde::{Deserialize, Serialize};
 use anyhow::{Context, Result};
 
-use crate::{config::AppConfig, error::TradingError, helpers::encode, perp::{backpack::BackpackClient, lighter::client::LighterClient}};
+use crate::{config::AppConfig, error::TradingError, helpers::encode, perp::{lighter::client::LighterClient}};
 
 /// Wallet struct containing API secrets for authentication with exchanges
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,6 +14,7 @@ pub struct Wallet {
     pub backpack_api_key: String,
     pub backpack_api_secret: String,
     pub proxy: Option<String>,
+    pub lighter_api_key: String,
 }
 
 
@@ -79,6 +80,11 @@ impl Wallet {
             })
             .unwrap_or(None);
 
+        let lighter_api_key = wallet_value.get("lighter_api_key")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| TradingError::InvalidInput("Missing field lighter_api_key".into()))?
+            .to_string();
+
         let backpack_api_key = wallet_value.get("backpack_api_key")
             .and_then(|v| v.as_str())
             .ok_or_else(|| TradingError::InvalidInput("Missing field backpack_api_key".into()))?
@@ -106,6 +112,7 @@ impl Wallet {
             address,
             backpack_api_key,
             backpack_api_secret,
+            lighter_api_key,
         })
     }
 }
