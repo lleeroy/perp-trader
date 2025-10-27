@@ -1,6 +1,6 @@
 use std::{fs::File, io::BufReader};
 use serde::{Deserialize, Serialize};
-use anyhow::{Result};
+use anyhow::{Context, Result};
 
 use crate::{config::AppConfig, error::TradingError, helpers::encode, perp::{backpack::BackpackClient, lighter::client::LighterClient}};
 
@@ -44,6 +44,10 @@ impl Wallet {
 
         let config = AppConfig::load()
             .map_err(|e| TradingError::InvalidInput(e.to_string()))?;
+
+        let password = std::env::var("WALLETS_PASSWORD")
+            .context("Failed to get WALLETS_PASSWORD from environment variables")?;
+
         let file = File::open("api-keys.json")
             .map_err(|e| TradingError::InvalidInput(e.to_string()))?;
         let reader = BufReader::new(file);
@@ -87,7 +91,7 @@ impl Wallet {
             .ok_or_else(|| TradingError::InvalidInput("Missing field backpack_api_secret".into()))?
             .to_string();
 
-        let decrypted_private_key = encode::decrypt_private_key(&private_key, &config.database.password)
+        let decrypted_private_key = encode::decrypt_private_key(&private_key, &password)
             .map_err(|e| TradingError::InvalidInput(format!("Failed to decrypt private key: {e}")))?;
 
         if address.is_empty() {

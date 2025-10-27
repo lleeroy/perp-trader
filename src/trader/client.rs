@@ -1,3 +1,14 @@
+/// A comprehensive trading client that manages multiple wallets, positions, and strategies
+/// across different exchanges (Backpack, Lighter).
+/// 
+/// # Features
+/// - Multi-wallet management with balanced position allocation
+/// - Cross-exchange trading (Backpack and Lighter)
+/// - Strategy-based position management with automatic closing
+/// - Real-time monitoring and error handling
+/// - Persistent storage for positions and strategies
+/// - Telegram alerts for strategy failures
+
 use crate::{
     alert::telegram::TelegramAlerter, error::TradingError, model::{
 		position::{Position, PositionSide, PositionStatus},
@@ -24,7 +35,20 @@ pub struct TraderClient {
 }
 
 impl TraderClient {
-    /// Create a new trader client with a database pool
+    /// Create a new trader client with specified wallets and database connection
+    /// 
+    /// # Arguments
+    /// * `wallet_ids` - Vector of wallet IDs to load (must have at least 3 wallets)
+    /// * `pool` - PostgreSQL connection pool for data persistence
+    /// 
+    /// # Returns
+    /// * `Ok(Self)` - Successfully initialized trader client
+    /// * `Err(TradingError)` - If wallet loading fails or insufficient wallets provided
+    /// 
+    /// # Errors
+    /// * `TradingError::InvalidInput` - If no wallet IDs provided or fewer than 3 wallets
+    /// * `TradingError::WalletError` - If wallet configuration files cannot be loaded
+    /// * `TradingError::StorageError` - If database connections cannot be established
     pub async fn new(wallet_ids: Vec<u8>, pool: PgPool) -> Result<Self, TradingError> {
 
         if wallet_ids.is_empty() {
@@ -55,7 +79,16 @@ impl TraderClient {
     }
 
 
-    #[allow(unused)]
+
+    /// Immediately close all active strategies and their positions
+    /// 
+    /// This method is used for emergency shutdown or manual intervention.
+    /// It will:
+    /// 1. Find all active strategies
+    /// 2. Set their status to "Closing"
+    /// 3. Attempt to close all positions on Lighter
+    /// 4. Update strategy status to "Closed" (success) or "Failed" (errors)
+    /// 5. Send Telegram alerts for any failures
     pub async fn close_all_active_strategies(&self) -> Result<(), TradingError> {
         let strategies = self.get_active_strategies().await?;
 
@@ -74,20 +107,38 @@ impl TraderClient {
                 Err(e) => {
                     error!("{}", format!("❌ Failed to close all positions: {} | YOU NEED TO CLOSE THE POSITIONS MANUALLY!", e).on_red());
                     self.set_strategy_status(&strategy.id, StrategyStatus::Failed, Some(Utc::now()), None).await?;
+
+                    let alerter = TelegramAlerter::new();                    
+                    if let Err(e) = alerter.send_strategy_error_alert(&strategy, &e).await {
+                        error!("{}", format!("❌ Failed to send strategy error alert: {}", e).on_red());
+                    }
                 }
             }
         }
+
         Ok(())
     }
 
-    /// Monitor and close strategies when they reach their close_at time
-    ///
+    /// Monitor strategies and automatically close them when their close time is reached
+    /// 
+    /// This method provides automated strategy lifecycle management by:
+    /// 1. Calculating the earliest close time across all strategies
+    /// 2. Waiting until the appropriate close times
+    /// 3. Closing positions for each strategy when its time arrives
+    /// 4. Handling failures with appropriate status updates and alerts
+    /// 
     /// # Arguments
-    /// * `strategies` - Vector of strategy metadata to monitor
-    ///
+    /// * `strategies` - Vector of strategy metadata to monitor and close
+    /// 
     /// # Returns
-    /// * `Ok(())` - All strategies were successfully closed
-    /// * `Err(TradingError)` - If any error occurs during monitoring/closing
+    /// * `Ok(())` - All strategies were processed (successfully or marked as failed)
+    /// * `Err(TradingError)` - If input validation fails or critical errors occur
+    /// 
+    /// # Behavior
+    /// - Strategies are closed sequentially in the order provided
+    /// - Each strategy waits for its specific close time
+    /// - Failed closures are marked and alerted but don't stop other strategies
+    /// - Local time display is adjusted to UTC+8 for user convenience
     pub async fn monitor_and_close_strategies(
         &self,
         strategies: Vec<StrategyMetadata>,
@@ -189,26 +240,31 @@ impl TraderClient {
         Ok(())
     }
 
-    /// Farm points on Backpack using multiple wallets with balanced long/short positions
+    /// Execute a market-neutral farming strategy on Backpack exchange
+    /// 
+    /// This method implements a sophisticated trading strategy designed for
+    /// points farming while minimizing market exposure through balanced
+    /// long/short positions across multiple wallets.
+    /// 
+    /// # Strategy Overview
+    /// 1. **Conflict Resolution**: Checks for active strategies and waits if needed
+    /// 2. **Balance Checking**: Verifies sufficient USDC balance in all wallets
+    /// 3. **Token Selection**: Randomly selects a trading token from supported list
+    /// 4. **Position Allocation**: Creates balanced long/short allocations across wallets
+    /// 5. **Parallel Execution**: Opens all positions concurrently for efficiency
+    /// 6. **Strategy Tracking**: Creates and persists strategy metadata for monitoring
     /// 
     /// # Arguments
-    /// * `duration_hours` - Duration in hours for how long positions should remain open (4-8 hours)
+    /// * `duration_hours` - How long positions should remain open (typically 4-8 hours)
     /// 
     /// # Returns
-    /// * `Ok(TradingStrategy)` - The executed trading strategy with all positions
-    /// * `Err(TradingError)` - If any error occurs during execution
+    /// * `Ok(TradingStrategy)` - Complete strategy with all opened positions
+    /// * `Err(TradingError)` - If any step fails or insufficient balances
     /// 
-    /// # Strategy
-    /// - First checks if any wallets are involved in active strategies
-    /// - If active strategies found: waits for them to complete before proceeding
-    /// - Then checks if any wallets have orphaned active positions
-    /// - For wallets with existing positions: monitors them until close time
-    /// - For wallets without positions: creates new trades
-    /// - Fetches USDC balance from each available wallet
-    /// - Randomly selects a token to trade
-    /// - Generates balanced long/short allocations (market neutral)
-    /// - Opens positions on available wallets
-    /// - Returns a TradingStrategy tracking all positions
+    /// # Market Neutral Approach
+    /// The strategy aims for market neutrality by balancing long and short positions
+    /// across the wallet pool, reducing overall market exposure while maximizing
+    /// points farming potential.
     pub async fn farm_points_on_backpack_from_multiple_wallets(
         &self,
         duration_hours: i64,
@@ -317,23 +373,29 @@ impl TraderClient {
         Ok(strategy)
     }
 
-    /// Farm points on Lighter using multiple wallets with balanced long/short positions
+    /// Execute a market-neutral farming strategy on Lighter exchange
+    /// 
+    /// Similar to Backpack farming but optimized for Lighter exchange with
+    /// additional safety features and confirmation steps.
+    /// 
+    /// # Enhanced Features
+    /// - **Pre-trade preview**: Displays strategy details before execution
+    /// - **Partial failure handling**: Automatically rolls back if any position fails
+    /// - **Detailed logging**: Comprehensive progress and status reporting
+    /// - **Time flexibility**: Duration specified in minutes for precise control
     /// 
     /// # Arguments
-    /// * `duration_hours` - Duration in hours for how long positions should remain open (4-8 hours)
+    /// * `duration_minutes` - Duration in minutes for position lifetime
     /// 
     /// # Returns
-    /// * `Ok(TradingStrategy)` - The executed trading strategy with all positions
-    /// * `Err(TradingError)` - If any error occurs during execution
+    /// * `Ok(TradingStrategy)` - Complete strategy with all opened positions
+    /// * `Err(TradingError)` - If any position fails (with automatic rollback)
     /// 
-    /// # Strategy
-    /// - First checks if any wallets are involved in active strategies
-    /// - If active strategies found: waits for them to complete before proceeding
-    /// - Fetches USDC balance from each available wallet on Lighter
-    /// - Randomly selects a token to trade
-    /// - Generates balanced long/short allocations (market neutral for break-even)
-    /// - Opens positions on all wallets
-    /// - Returns a TradingStrategy tracking all positions
+    /// # Safety Mechanisms
+    /// - All-or-nothing position opening with automatic rollback on failures
+    /// - Balance verification before trading
+    /// - Strategy preview for user confirmation (commented out but available)
+    /// - Comprehensive error handling and cleanup
     pub async fn farm_points_on_lighter_from_multiple_wallets(
         &self,
         duration_minutes: i64,
@@ -508,7 +570,12 @@ impl TraderClient {
     }
 
 
-    // ===== Small internal helpers to reduce duplication =====
+    // ===== Internal Helper Methods =====
+
+    /// Wait asynchronously until the specified deadline
+    /// 
+    /// # Arguments
+    /// * `deadline` - DateTime to wait until
 	async fn wait_until(&self, deadline: DateTime<Utc>) {
 		let now = Utc::now();
 		if deadline > now {
@@ -522,6 +589,14 @@ impl TraderClient {
 		}
 	}
 
+    /// Find a wallet by ID from the loaded wallets
+    /// 
+    /// # Arguments
+    /// * `wallet_id` - Numeric wallet identifier
+    /// 
+    /// # Returns
+    /// * `Ok(&Wallet)` - Reference to the found wallet
+    /// * `Err(TradingError)` - If wallet ID not found
     #[allow(unused)]
 	fn find_wallet(&self, wallet_id: u8) -> Result<&Wallet, TradingError> {
 		self.wallets
@@ -530,6 +605,10 @@ impl TraderClient {
 			.ok_or_else(|| TradingError::InvalidInput(format!("Wallet #{} not found", wallet_id)))
 	}
 
+    /// Mark a position as failed in storage
+    /// 
+    /// # Arguments
+    /// * `position_id` - Unique identifier of the position to mark as failed
     #[allow(unused)]
 	async fn mark_position_failed(&self, position_id: &str) -> Result<(), TradingError> {
 		self
@@ -538,6 +617,14 @@ impl TraderClient {
 			.await
 	}
 
+
+    /// Update the status of a strategy in storage
+    /// 
+    /// # Arguments
+    /// * `strategy_id` - Unique strategy identifier
+    /// * `status` - New status to set
+    /// * `closed_at` - Optional close timestamp (for completed strategies)
+    /// * `total_pnl` - Optional PNL value (for completed strategies)
 	async fn set_strategy_status(
 		&self,
 		strategy_id: &str,
@@ -551,6 +638,15 @@ impl TraderClient {
 			.await
 	}
 
+
+    /// Get a Lighter client for a specific wallet
+    /// 
+    /// # Arguments
+    /// * `wallet_id` - Wallet identifier
+    /// 
+    /// # Returns
+    /// * `Ok(LighterClient)` - Configured client for the wallet
+    /// * `Err(TradingError)` - If wallet client not found
     fn get_lighter_client(&self, wallet_id: u8) -> Result<LighterClient, TradingError> {
         Ok(self.wallet_trading_clients
             .iter().find(|w| w.wallet.id == wallet_id)
@@ -559,6 +655,15 @@ impl TraderClient {
             .clone())
     }
 
+
+    /// Get a Backpack client for a specific wallet
+    /// 
+    /// # Arguments
+    /// * `wallet_id` - Wallet identifier
+    /// 
+    /// # Returns
+    /// * `Ok(BackpackClient)` - Configured client for the wallet
+    /// * `Err(TradingError)` - If wallet client not found
     fn get_backpack_client(&self, wallet_id: u8) -> Result<BackpackClient, TradingError> {
         Ok(self.wallet_trading_clients
             .iter().find(|w| w.wallet.id == wallet_id)
@@ -567,6 +672,15 @@ impl TraderClient {
             .clone())
     }
 
+
+    /// Close all open positions on Lighter exchange across all wallets
+    /// 
+    /// This method attempts to close every open position for every wallet
+    /// managed by this client. Used for emergency shutdowns and rollbacks.
+    /// 
+    /// # Returns
+    /// * `Ok(())` - All close operations initiated successfully
+    /// * `Err(TradingError)` - If any close operation fails
     async fn close_all_positions_on_lighter(&self) -> Result<(), TradingError> {
         let mut futures = Vec::new();
         for wallet in &self.wallets {
@@ -588,6 +702,12 @@ impl TraderClient {
         Ok(())
     }
 
+
+    /// Fetch USDC balances for all wallets from Backpack exchange
+    /// 
+    /// # Returns
+    /// * `Ok(Vec<(u8, Decimal)>)` - Vector of (wallet_id, balance) pairs
+    /// * `Err(TradingError)` - If any wallet has insufficient balance or API fails
 	pub async fn fetch_wallet_balances_on_backpack(&self) -> Result<Vec<(u8, Decimal)>, TradingError> {
 		let mut balances = Vec::with_capacity(self.wallets.len());
 
@@ -607,6 +727,12 @@ impl TraderClient {
 		Ok(balances)
 	}
 
+
+    /// Fetch USDC balances for all wallets from Lighter exchange
+    /// 
+    /// # Returns
+    /// * `Ok(Vec<(u8, Decimal)>)` - Vector of (wallet_id, balance) pairs
+    /// * `Err(TradingError)` - If any wallet has insufficient balance or API fails
 	pub async fn fetch_wallet_balances_on_lighter(&self) -> Result<Vec<(u8, Decimal)>, TradingError> {
 		let mut balances = Vec::with_capacity(self.wallets.len());
 
@@ -626,6 +752,13 @@ impl TraderClient {
 		Ok(balances)
 	}
 
+
+
+    /// Randomly select a token from the supported tokens list
+    /// 
+    /// # Returns
+    /// * `Ok(Token)` - Randomly selected token for trading
+    /// * `Err(TradingError)` - If no supported tokens are available
 	pub fn select_random_token(&self) -> Result<Token, TradingError> {
 		let supported = Token::get_supported_tokens();
 		let mut rng = rand::thread_rng();
@@ -636,8 +769,16 @@ impl TraderClient {
 			.ok_or_else(|| TradingError::InvalidInput("No tokens available".into()))
 	}
 
-	/// Checks for active strategies involving this client's wallets.
-	/// If conflicts are present, waits for them to close and returns an error instructing caller to retry.
+    /// Check for and handle conflicting active strategies
+    /// 
+    /// This method prevents strategy conflicts by:
+    /// 1. Identifying active strategies that use any of this client's wallets
+    /// 2. Waiting for those strategies to complete naturally
+    /// 3. Returning an error instructing the caller to retry
+    /// 
+    /// # Returns
+    /// * `Ok(())` - No conflicting strategies found
+    /// * `Err(TradingError)` - Conflicts were found and handled, retry needed
 	async fn handle_conflicting_strategies(&self) -> Result<(), TradingError> {
 		let active_strategies = self.strategy_storage.get_active_strategies().await?;
 

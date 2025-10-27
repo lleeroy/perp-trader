@@ -7,21 +7,9 @@ use std::time::Duration;
 /// Application configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
-    pub database: DatabaseConfig,
     pub trading: TradingConfig,
     pub monitoring: MonitoringConfig,
     pub exchanges: ExchangesConfig,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DatabaseConfig {
-    /// PostgreSQL connection URL
-    pub url: String,
-    /// Maximum number of connections in the pool
-    #[serde(default = "default_max_connections")]
-    pub max_connections: u32,
-    /// Password for the database
-    pub password: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,9 +119,6 @@ impl AppConfig {
         dotenv::dotenv().ok();
 
         let config = config::Config::builder()
-            // Set defaults
-            .set_default("database.url", "postgresql://localhost/perp_trader")?
-            .set_default("database.max_connections", default_max_connections())?
             .set_default("trading.min_leverage", default_min_leverage())?
             .set_default("trading.max_leverage", default_max_leverage())?
             .set_default("trading.min_duration_hours", default_min_duration_hours())?

@@ -14,10 +14,11 @@ mod test;
 
 use std::fs::File;
 use std::io::BufReader;
+use std::time::Duration;
 use anyhow::{Result, Context};
 use inquire::{Select, Confirm};
 use rand::Rng;
-use crate::config::AppConfig;
+use tokio::time;
 use crate::trader::client::TraderClient;
 use colored::*;
 use std::io::Write;
@@ -45,6 +46,11 @@ fn load_all_wallet_ids() -> Result<Vec<u8>> {
     Ok(wallet_ids)
 }
 
+/// Detect if running on Fly.io
+fn is_running_on_flyio() -> bool {
+    std::env::var("FLY_APP_NAME").is_ok() || 
+    std::env::var("FLY_ALLOC_ID").is_ok()
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -73,20 +79,6 @@ async fn main() -> Result<()> {
         .init();
 
     info!("🚀 Starting perp-trader application...");
-
-    // let wallet = trader::wallet::Wallet::load_from_json(2)?;
-    // let trading_client = trader::wallet::WalletTradingClient::new(wallet).await?;
-    // let token = model::token::Token::ena();
-    // let side = model::PositionSide::Long;
-    // let close_at = chrono::Utc::now()+chrono::Duration::minutes(60);
-    // let amount_usdc = rust_decimal::Decimal::from(10);
-
-    // perp::PerpExchange::open_position(&trading_client.lighter_client, token, side, close_at, amount_usdc).await?;
-    // perp::PerpExchange::close_all_positions(&trading_client.lighter_client).await?;
-
-
-    // Load configuration
-    let config = AppConfig::load()?;
     
     // Load all available wallets
     let wallet_ids = load_all_wallet_ids()?;
@@ -109,20 +101,8 @@ async fn main() -> Result<()> {
 
     // Create database connection pool
     info!("🔌 Connecting to database...");
-    let pool = storage::init_pool(&config).await?;
+    let pool = storage::init_pool().await?;
     info!("✅ Database connected successfully");
-
-    // Interactive menu for exchange selection
-    println!("\n{}", "FARMING STRATEGIES:".bold());
-    let options = vec![
-        "🎒 Farm points on Backpack",
-        "💡 Farm points on Lighter",
-        "🛑 Close all active strategies",
-    ];
-
-    let selection = Select::new("Select operation:", options.clone())
-        .prompt()
-        .context("Failed to get user selection")?;
 
     enum Action {
         FarmBackpack,
@@ -130,39 +110,58 @@ async fn main() -> Result<()> {
         CloseAll,
     }
 
-    let action = match selection {
-        s if s == options[0] => Action::FarmBackpack,
-        s if s == options[1] => Action::FarmLighter,
-        s if s == options[2] => Action::CloseAll,
-        _ => {
-            warn!("Invalid selection");
+    // Determine action based on environment
+    let action = if is_running_on_flyio() {
+        info!("🪰 Detected Fly.io environment - auto-starting Lighter farming");
+        Action::FarmLighter
+    } else {
+        // Interactive menu for local development
+        println!("\n{}", "FARMING STRATEGIES:".bold());
+        let options = vec![
+            "🎒 Farm points on Backpack",
+            "💡 Farm points on Lighter",
+            "🛑 Close all active strategies",
+        ];
+
+        let selection = Select::new("Select operation:", options.clone())
+            .prompt()
+            .context("Failed to get user selection")?;
+
+        let selected_action = match selection {
+            s if s == options[0] => Action::FarmBackpack,
+            s if s == options[1] => Action::FarmLighter,
+            s if s == options[2] => Action::CloseAll,
+            _ => {
+                warn!("Invalid selection");
+                return Ok(());
+            }
+        };
+
+        // Confirm before proceeding
+        let confirmation_message = match selected_action {
+            Action::FarmBackpack => "Start farming on Backpack?",
+            Action::FarmLighter => "Start farming on Lighter?",
+            Action::CloseAll => "Close all active strategies?",
+        };
+
+        let should_continue = Confirm::new(confirmation_message)
+            .with_default(false)
+            .prompt()
+            .context("Failed to get confirmation")?;
+
+        if !should_continue {
+            warn!("\n❌ Operation cancelled by user.");
             return Ok(());
         }
+
+        selected_action
     };
-
-    // Confirm before proceeding
-    let confirmation_message = match action {
-        Action::FarmBackpack => "Start farming on Backpack?",
-        Action::FarmLighter => "Start farming on Lighter?",
-        Action::CloseAll => "Close all active strategies?",
-    };
-
-    let should_continue = Confirm::new(confirmation_message)
-        .with_default(false)
-        .prompt()
-        .context("Failed to get confirmation")?;
-
-    if !should_continue {
-        warn!("\n❌ Operation cancelled by user.");
-        return Ok(());
-    }
 
     // Initialize trader client
     info!("Initializing trader client with {} wallets...", wallet_ids.len());
     let trader_client = TraderClient::new(wallet_ids.clone(), pool.clone())
         .await
         .context("Failed to create trader client")?;
-    info!("✅ Trader client initialized");
 
     // Execute selected action
     match action {
@@ -173,14 +172,15 @@ async fn main() -> Result<()> {
         }
         Action::FarmBackpack | Action::FarmLighter => {
             let is_backpack = matches!(action, Action::FarmBackpack);
+            let mut rng = rand::thread_rng();
+            let mut i = 0;
             
-            for i in 0..10 {
-                let mut rng = rand::thread_rng();
-                let duration_minutes = rng.gen_range(60..=180);
+            loop {
+                let loop_sleep_minutes = rng.gen_range(5..=20);
+                let duration_minutes = rng.gen_range(60..=240);
                 info!("#{} | Duration set to: {} minutes", i, duration_minutes);
                 info!("#{} | Strategy starting...", i);
 
-                // Execute selected strategy
                 if is_backpack {
                     trader_client.farm_points_on_backpack_from_multiple_wallets(duration_minutes).await?;
                 } else {
@@ -192,6 +192,10 @@ async fn main() -> Result<()> {
                 if !active_strategies.is_empty() {
                     trader_client.monitor_and_close_strategies(active_strategies).await?;
                 }
+
+                i += 1;
+                info!("#{} | Sleeping for {} minutes", i, loop_sleep_minutes);
+                time::sleep(Duration::from_secs(loop_sleep_minutes * 60)).await;
             }
         }
     }

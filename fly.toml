@@ -1,0 +1,25 @@
+app = 'perp-trader'
+primary_region = 'sin'
+
+[build]
+
+[env]
+PORT = '8080'
+
+DATABASE_MAX_CONNECTIONS = '5'
+
+RUST_LOG = "info"
+RUST_LOG_STYLE = "always"
+
+[http_service]
+internal_port = 8080
+force_https = true
+auto_stop_machines = 'stop'
+auto_start_machines = true
+min_machines_running = 1
+processes = ['app']
+
+[[vm]]
+memory = '1gb'
+cpu_kind = 'shared'
+cpus = 1

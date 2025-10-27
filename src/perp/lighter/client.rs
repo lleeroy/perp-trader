@@ -332,125 +332,147 @@ impl LighterClient {
         }
     }
 
+
     async fn close_all_positions(&self) -> Result<(), TradingError> {
         let positions = self.get_active_positions().await?;
+        let positions_to_close: Vec<LighterPosition> = positions.iter()
+            .filter(|p| self.should_close_position(p))
+            .cloned()
+            .collect();
 
-        for position in positions {
-            if position.position_value.parse::<Decimal>().unwrap_or(Decimal::ZERO) > Decimal::ZERO {
-                let token_id = position.market_id;
-                let token = Token::from_market_index(Exchange::Lighter, token_id);
+        if positions_to_close.is_empty() {
+            info!("#{} | no positions to close!", self.wallet.id);
+            return Ok(());
+        }
 
-                let position_side = match position.sign {
-                    1 => PositionSide::Long,
-                    -1 => PositionSide::Short,
-                    _ => return Err(TradingError::InvalidInput(format!("Invalid position sign: {}", position.sign))),
+        for position in positions_to_close {
+            let token_id = position.market_id;
+            let token = Token::from_market_index(Exchange::Lighter, token_id);
+            let (position_side_current, position_side_to_close) = self.parse_position_sides(position.sign)?;
+
+            let mut last_err: Option<TradingError> = None;
+            let mut closed = false;
+
+            for attempt in 1..=5 {
+                let price = match self.get_market_price(&token, position_side_to_close).await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        error!(
+                            "#{} | failed to fetch price for {} (attempt {}): {}. Trying again...",
+                            self.wallet.id, position.symbol, attempt, e
+                        );
+                        last_err = Some(e.into());
+                        sleep(Duration::from_millis(350)).await;
+                        continue;
+                    }
                 };
 
-                let position_side_to_close: PositionSide = match position.sign {
-                    1 => PositionSide::Short,
-                    -1 => PositionSide::Long,
-                    _ => return Err(TradingError::InvalidInput(format!("Invalid position sign: {}", position.sign))),
-                };
+                info!("#{} | found open {} position to close: {} (attempt {})", self.wallet.id, position_side_current, position.symbol, attempt);
+                let position_size: f64 = position.position.parse::<f64>().unwrap();
+                let base_amount = self.base_amount_from_f64(position_size)?;
 
-                let mut last_err: Option<TradingError> = None;
-                let mut closed = false;
+                info!("#{} | <{}> position size: {}", self.wallet.id, position.symbol, position_size);
+                info!("#{} | <{}> base amount: {}", self.wallet.id, position.symbol, base_amount);
 
-                for attempt in 1..=3 {
-                    let price = match self.get_market_price(&token, position_side_to_close).await {
-                        Ok(p) => p,
+
+                let order = match self
+                    .execute_market_order(&token, position_side_to_close, base_amount, price, true).await {
+                        Ok(o) => o,
                         Err(e) => {
                             error!(
-                                "#{} | failed to fetch price for {} (attempt {}): {}. Trying again...",
+                                "#{} | Failed to execute market order for {} (attempt {}): {}. Trying again...",
                                 self.wallet.id, position.symbol, attempt, e
                             );
+
                             last_err = Some(e.into());
                             sleep(Duration::from_millis(350)).await;
                             continue;
                         }
-                    };
+                };
 
-                    info!("#{} | found open {} position to close: {} (attempt {})", self.wallet.id, position_side, position.symbol, attempt);
-                    let position_size: f64 = position.position.parse::<f64>().unwrap();
-                    let base_amount = self.base_amount_from_f64(position_size)?;
+                match self.get_order_by_hash(&order).await {
+                    Ok(_) => {
+                        info!("#{} | found order by hash: {}", self.wallet.id, order);
+                        let positions = self.get_active_positions().await?;
+                        let market_index = token.get_market_index(Exchange::Lighter);
 
-                    info!("#{} | <{}> position size: {}", self.wallet.id, position.symbol, position_size);
-                    info!("#{} | <{}> base amount: {}", self.wallet.id, position.symbol, base_amount);
+                        info!("#{} | looking in positions if still open...", self.wallet.id);
 
+                        if let Some(pos) = positions.iter().find(|p| p.market_id == market_index) {
+                            let pos_value = pos.position_value.parse::<Decimal>().unwrap_or(Decimal::ZERO);
+                            info!("#{} | position value: {}", self.wallet.id, pos_value);
 
-                    let order = match self
-                        .execute_market_order(&token, position_side_to_close, base_amount, price, true).await {
-                            Ok(o) => o,
-                            Err(e) => {
-                                error!(
-                                    "#{} | Failed to execute market order for {} (attempt {}): {}. Trying again...",
-                                    self.wallet.id, position.symbol, attempt, e
+                            if pos_value == Decimal::ZERO {
+                                info!("#{} | position size is 0, which means it closed: {}", self.wallet.id, pos.symbol);
+                                info!("#{} | 🔴🔴 position closed: {}", self.wallet.id, pos.symbol);
+                                closed = true;
+                                break;
+                            } else {
+                                last_err = Some(TradingError::ExchangeError(format!(
+                                    "Failed to close position on market index {} with token {}, still open...",
+                                    market_index,
+                                    token.get_symbol_string(Exchange::Lighter)
+                                )));
+
+                                warn!("#{} | attempt {} | at position {} still open. Trying again...", 
+                                    self.wallet.id, attempt, position.symbol
                                 );
 
-                                last_err = Some(e.into());
                                 sleep(Duration::from_millis(350)).await;
                                 continue;
                             }
-                    };
+                        } else {
+                            info!("#{} | position not found in positions, which means it closed: {}", self.wallet.id, position.symbol);
+                            info!("#{} | 🔴🔴 position closed: {}", self.wallet.id, position.symbol);
 
-                    match self.get_order_by_hash(&order).await {
-                        Ok(_) => {
-                            info!("#{} | found order by hash: {}", self.wallet.id, order);
-                            let positions = self.get_active_positions().await?;
-                            let market_index = token.get_market_index(Exchange::Lighter);
-
-                            info!("#{} | looking in positions if still open...", self.wallet.id);
-
-                            if let Some(pos) = positions.iter().find(|p| p.market_id == market_index) {
-                                let pos_value = pos.position_value.parse::<Decimal>().unwrap_or(Decimal::ZERO);
-                                info!("#{} | position value: {}", self.wallet.id, pos_value);
-
-                                if pos_value == Decimal::ZERO {
-                                    info!("#{} | position size is 0, which means it closed: {}", self.wallet.id, pos.symbol);
-                                    info!("#{} | 🔴🔴 position closed: {}", self.wallet.id, pos.symbol);
-                                    closed = true;
-                                    break;
-                                } else {
-                                    return Err(TradingError::ExchangeError(format!(
-                                        "Failed to close position on market index {} with token {}",
-                                        market_index,
-                                        token.get_symbol_string(Exchange::Lighter)
-                                    )));
-                                }
-                            } else {
-                                info!("#{} | position not found in positions, which means it closed: {}", self.wallet.id, position.symbol);
-                                info!("#{} | 🔴🔴 position closed: {}", self.wallet.id, position.symbol);
-
-                                closed = true;
-                                break;
-                            }
-                        }
-                        Err(e) => {
-                            error!(
-                                "#{} | failed to confirm close of position {} (attempt {}): {}. Trying again...",
-                                self.wallet.id, position.symbol, attempt, e
-                            );
-
-                            last_err = Some(e.into());
-                            sleep(Duration::from_millis(350)).await;
-                            continue;
+                            closed = true;
+                            break;
                         }
                     }
-                }
-
-                if !closed {
-                    if let Some(e) = last_err {
+                    Err(e) => {
                         error!(
-                            "#{} | position close ultimately failed for {} after 3 attempts. Last error: {}",
-                            self.wallet.id, position.symbol, e
+                            "#{} | failed to confirm close of position {} (attempt {}): {}. Trying again...",
+                            self.wallet.id, position.symbol, attempt, e
                         );
 
-                        return Err(e);
+                        last_err = Some(e.into());
+                        sleep(Duration::from_millis(350)).await;
+                        continue;
                     }
+                }
+            }
+
+            if !closed {
+                if let Some(e) = last_err {
+                    error!(
+                        "#{} | position close ultimately failed for {} after 3 attempts. Last error: {}",
+                        self.wallet.id, position.symbol, e
+                    );
+
+                    return Err(e);
                 }
             }
         }
 
         Ok(())
+    }
+
+    fn should_close_position(&self, position: &LighterPosition) -> bool {
+        let position_value = position.position_value
+            .parse::<Decimal>()
+            .unwrap_or(Decimal::ZERO);
+        
+        position_value > Decimal::ZERO
+    }
+
+    fn parse_position_sides(&self, sign: i32) -> Result<(PositionSide, PositionSide), TradingError> {
+        match sign {
+            1 => Ok((PositionSide::Long, PositionSide::Short)),
+            -1 => Ok((PositionSide::Short, PositionSide::Long)),
+            _ => Err(TradingError::InvalidInput(format!(
+                "Invalid position sign: {}", sign
+            ))),
+        }
     }
 
     fn base_amount_from_f64(&self, amount: f64) -> Result<u64, TradingError> {
