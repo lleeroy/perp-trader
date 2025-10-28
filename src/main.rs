@@ -20,7 +20,7 @@ use inquire::{Select, Confirm};
 use rand::Rng;
 use tokio::time;
 
-use crate::{perp::PerpExchange, trader::client::TraderClient};
+use crate::{trader::client::TraderClient};
 use colored::*;
 use std::io::Write;
 
@@ -80,7 +80,7 @@ async fn main() -> Result<()> {
         .init();
 
     info!("🚀 Starting perp-trader application...");
-    
+
     // Load all available wallets
     let wallet_ids = load_all_wallet_ids()?;
     

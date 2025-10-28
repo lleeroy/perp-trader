@@ -264,6 +264,7 @@ impl LighterClient {
     ///
     /// # Errors
     ///
+    #[allow(unused)]
     pub async fn is_authenticated(&self) -> Result<bool, TradingError> {
         self.get_account().await.map(|_| true).map_err(|e| TradingError::InvalidInput(e.to_string()))
     }
@@ -547,14 +548,14 @@ impl LighterClient {
     /// * No positions found in account
     pub async fn get_active_positions(&self) -> Result<Vec<LighterPosition>, TradingError> {
         let account = self.get_account().await?;
+
         match account.positions {
             Some(positions) => {
-                let positions = positions.iter()
+                let positions: Vec<LighterPosition> = positions.iter()
                     .filter(
                         |p| 
-                        p.position_value.parse::<Decimal>()
-                            .unwrap_or(Decimal::ZERO) > Decimal::ZERO
-                        )
+                        p.position_value > Decimal::ZERO
+                    )
                     .cloned()
                     .collect();
 
@@ -601,7 +602,7 @@ impl LighterClient {
             let price = self.get_market_price(&token, position_side_to_close).await?;
     
             info!("#{} | found open {} position to close: {}", self.wallet.id, position_side_current, position.symbol);
-            let position_size: f64 = position.position.parse::<f64>().unwrap();
+            let position_size: f64 = position.position.to_string().parse::<f64>().unwrap();
             let base_amount = self.base_amount_from_f64(position_size)?;
     
             info!("#{} | <{}> position size: {}", self.wallet.id, position.symbol, position_size);
@@ -619,10 +620,9 @@ impl LighterClient {
                     info!("#{} | looking in positions if still open...", self.wallet.id);
     
                     if let Some(pos) = positions.iter().find(|p| p.market_id == market_index) {
-                        let pos_value = pos.position_value.parse::<Decimal>().unwrap_or(Decimal::ZERO);
-                        info!("#{} | position value: {}", self.wallet.id, pos_value);
+                        info!("#{} | position value: {}", self.wallet.id, pos.position_value);
     
-                        if pos_value == Decimal::ZERO {
+                        if pos.position_value == Decimal::ZERO {
                             info!("#{} | position size is 0, which means it closed: {}", self.wallet.id, pos.symbol);
                             info!("#{} | 🔴🔴 position closed: {}", self.wallet.id, pos.symbol);
 
@@ -662,11 +662,7 @@ impl LighterClient {
     ///
     /// * `bool` - `true` if position has non-zero value and should be closed
     fn should_close_position(&self, position: &LighterPosition) -> bool {
-        let position_value = position.position_value
-            .parse::<Decimal>()
-            .unwrap_or(Decimal::ZERO);
-        
-        position_value > Decimal::ZERO
+        position.position_value > Decimal::ZERO
     }
 
     /// Parses position sign integer into PositionSide tuples.
@@ -1124,9 +1120,8 @@ impl PerpExchange for LighterClient {
         let market_index = token.get_market_index(Exchange::Lighter);
         if let Some(pos) = positions.iter().find(|p| p.market_id == market_index) {
             let id = uuid::Uuid::new_v4().to_string();
-            let pos_value = pos.position_value.parse::<Decimal>().unwrap_or(Decimal::ZERO);
 
-            if pos_value > Decimal::ZERO {
+            if pos.position_value > Decimal::ZERO {
                 info!("#{} | 🟢🟢 position opened: {}", self.wallet.id, tx.hash);
 
                 return Ok(Position {
@@ -1136,7 +1131,7 @@ impl PerpExchange for LighterClient {
                     exchange: Exchange::Lighter,
                     symbol: token.get_symbol_string(Exchange::Lighter),
                     side,
-                    size: pos_value,
+                    size: pos.position_value,
                     status: PositionStatus::Open,
                     opened_at: Utc::now(),
                     close_at,

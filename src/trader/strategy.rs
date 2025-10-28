@@ -258,9 +258,6 @@ impl TradingStrategy {
                 "Imbalance too large: {:.2} USDC (max allowed: {:.2} USDC)", 
                 imbalance, max_allowed_imbalance
             )));
-            
-        } else if imbalance > Decimal::ZERO {
-            info!("  ⚠️  Small imbalance detected: {:.2} USDC (within tolerance)", imbalance);
         } else {
             info!("  ✅ Perfectly balanced allocation");
         }

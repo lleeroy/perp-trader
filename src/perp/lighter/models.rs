@@ -1,5 +1,8 @@
 use chrono::Utc;
+use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
+use crate::helpers::deserialize_decimal_from_string;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LighterAccount {
@@ -30,12 +33,18 @@ pub struct LighterPosition {
     pub pending_order_count: i64,
     pub position_tied_order_count: i64,
     pub sign: i32,
-    pub position: String,
-    pub avg_entry_price: String,
-    pub position_value: String,
-    pub unrealized_pnl: String,
-    pub realized_pnl: String,
-    pub liquidation_price: String,
+    #[serde(deserialize_with = "deserialize_decimal_from_string")]
+    pub position: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_from_string")]
+    pub avg_entry_price: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_from_string")]
+    pub position_value: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_from_string")]
+    pub unrealized_pnl: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_from_string")]
+    pub realized_pnl: Decimal,
+    #[serde(deserialize_with = "deserialize_decimal_from_string")]
+    pub liquidation_price: Decimal,
     pub total_funding_paid_out: Option<String>,
     pub allocated_margin: Option<String>,
 }
@@ -133,3 +142,32 @@ impl LighterOrder {
     }
 }
 
+
+impl LighterPosition {
+    pub fn get_percentage_to_liquidation(&self) -> Decimal {
+        let liq_price = self.liquidation_price;
+        let entry_price = self.avg_entry_price;
+        
+        if entry_price == Decimal::ZERO || liq_price == Decimal::ZERO {
+            return Decimal::ZERO;
+        }
+        
+        match self.sign {
+            1 => { // Long position
+                if entry_price <= liq_price {
+                    Decimal::ZERO
+                } else {
+                    (entry_price - liq_price) / entry_price * dec!(100)
+                }
+            },
+            -1 => { // Short position
+                if entry_price >= liq_price {
+                    Decimal::ZERO
+                } else {
+                    (liq_price - entry_price) / entry_price * dec!(100)
+                }
+            },
+            _ => Decimal::ZERO
+        }
+    }
+}

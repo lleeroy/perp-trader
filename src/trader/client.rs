@@ -407,6 +407,7 @@ impl TraderClient {
     pub async fn farm_points_on_lighter_from_multiple_wallets(&self) -> Result<Vec<TradingStrategy>, TradingError> {
         info!("🎯 Starting Lighter farming strategy with {} wallets", self.wallets.len());
         let mut rng = rand::thread_rng();
+        let duration_minutes = rng.gen_range(60..=240);
 
         // Handle conflicting strategies across our wallets (retry-after-close behavior)
         self.handle_conflicting_strategies().await?;
@@ -434,12 +435,11 @@ impl TraderClient {
 
         // Step 3: Execute strategies for each group
         let mut all_strategies: Vec<TradingStrategy> = Vec::new();
-        let duration_minutes = rng.gen_range(1..=3);
 
         for (group_index, wallet_group) in wallet_groups.into_iter().enumerate() {
             info!("🚀 Executing strategy for group {} (wallets: {:?})", group_index + 1, wallet_group);
 
-            let close_at = Utc::now() + Duration::minutes(duration_minutes + rng.gen_range(1..=3)); // Add 1-3 minutes to the duration to avoid conflicts
+            let close_at = Utc::now() + Duration::minutes(duration_minutes + rng.gen_range(1..=5));
             info!("⏱️  Strategy duration: {} minutes", duration_minutes);
 
             // Filter balances for this group
@@ -598,6 +598,7 @@ impl TraderClient {
     /// # Returns
     /// * `Ok(())` - All close operations completed successfully
     /// * `Err(TradingError)` - If any close operation fails after all attempts
+    #[allow(unused)]
     async fn close_all_positions_on_lighter_for_all_wallets(&self) -> Result<(), TradingError> {
         use futures::future::try_join_all;
 
@@ -635,7 +636,7 @@ impl TraderClient {
                 }
             }
         }
-        
+
         Ok(())
     }
 
