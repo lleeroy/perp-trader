@@ -599,7 +599,7 @@ impl TraderClient {
     /// * `Ok(())` - All close operations completed successfully
     /// * `Err(TradingError)` - If any close operation fails after all attempts
     #[allow(unused)]
-    async fn close_all_positions_on_lighter_for_all_wallets(&self) -> Result<(), TradingError> {
+    pub async fn close_all_positions_on_lighter_for_all_wallets(&self) -> Result<(), TradingError> {
         use futures::future::try_join_all;
 
         for attempt in 1..=5 {

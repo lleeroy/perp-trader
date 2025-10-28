@@ -18,9 +18,10 @@ use std::time::Duration;
 use anyhow::{Result, Context};
 use inquire::{Select, Confirm};
 use rand::Rng;
+use rust_decimal::Decimal;
 use tokio::time;
 
-use crate::{trader::client::TraderClient};
+use crate::{perp::PerpExchange, trader::client::TraderClient};
 use colored::*;
 use std::io::Write;
 
@@ -81,6 +82,17 @@ async fn main() -> Result<()> {
 
     info!("🚀 Starting perp-trader application...");
 
+    // let wallet = trader::wallet::Wallet::load_from_json(1)?;
+    // let lighter_client = perp::lighter::client::LighterClient::new(&wallet).await?;
+    // let token = model::token::Token::pengu();
+    // let side = model::position::PositionSide::Long;
+    // let close_at = chrono::Utc::now() + chrono::Duration::days(1);
+    // let amount_usdc = rust_decimal::Decimal::from(10);
+
+    // lighter_client.open_position(token, side, close_at, amount_usdc).await?;
+    // lighter_client.close_all_positions().await?;
+    // loop {};
+
     // Load all available wallets
     let wallet_ids = load_all_wallet_ids()?;
     
@@ -108,7 +120,9 @@ async fn main() -> Result<()> {
     enum Action {
         FarmBackpack,
         FarmLighter,
-        CloseAll,
+        CloseAllStrategies,
+        CloseAllPositions,
+        ShowAllWalletsBalances,
     }
 
     // Determine action based on environment
@@ -121,7 +135,9 @@ async fn main() -> Result<()> {
         let options = vec![
             "🎒 Farm points on Backpack",
             "💡 Farm points on Lighter",
-            "🛑 Close all active strategies",
+            "✋ Close all active strategies",
+            "💸 Close all active positions",
+            "💰 Show all wallets balances",
         ];
 
         let selection = Select::new("Select operation:", options.clone())
@@ -131,7 +147,9 @@ async fn main() -> Result<()> {
         let selected_action = match selection {
             s if s == options[0] => Action::FarmBackpack,
             s if s == options[1] => Action::FarmLighter,
-            s if s == options[2] => Action::CloseAll,
+            s if s == options[2] => Action::CloseAllStrategies,
+            s if s == options[3] => Action::CloseAllPositions,
+            s if s == options[4] => Action::ShowAllWalletsBalances,
             _ => {
                 warn!("Invalid selection");
                 return Ok(());
@@ -142,7 +160,9 @@ async fn main() -> Result<()> {
         let confirmation_message = match selected_action {
             Action::FarmBackpack => "Start farming on Backpack?",
             Action::FarmLighter => "Start farming on Lighter?",
-            Action::CloseAll => "Close all active strategies?",
+            Action::CloseAllStrategies => "Close all active strategies?",
+            Action::CloseAllPositions => "Close all open positions?",
+            Action::ShowAllWalletsBalances => "Show all wallets balances?",
         };
 
         let should_continue = Confirm::new(confirmation_message)
@@ -166,10 +186,15 @@ async fn main() -> Result<()> {
 
 
     match action {
-        Action::CloseAll => {
+        Action::CloseAllStrategies => {
             info!("Closing all active strategies...");
             trader_client.close_all_active_strategies().await?;
             info!("✅ All strategies closed");
+        }
+        Action::CloseAllPositions => {
+            info!("Closing all open positions...");
+            trader_client.close_all_positions_on_lighter_for_all_wallets().await?;
+            info!("✅ All positions closed");
         }
         Action::FarmBackpack | Action::FarmLighter => {
             let is_backpack = matches!(action, Action::FarmBackpack);
@@ -196,6 +221,15 @@ async fn main() -> Result<()> {
                 info!("#{} | Sleeping for {} minutes", i, loop_sleep_minutes);
                 time::sleep(Duration::from_secs(loop_sleep_minutes * 60)).await;
             }
+        }
+        Action::ShowAllWalletsBalances => {
+            let wallet_balances = trader_client.fetch_wallet_balances_on_lighter().await?;
+            for i in 0..wallet_balances.len() {
+                info!("#{}: {:.2}$", i, wallet_balances[i].1);
+            }
+
+            let total_balance = wallet_balances.iter().map(|(_, balance)| balance).sum::<Decimal>();
+            info!("Total balance: {:.2}$", total_balance);
         }
     }
 

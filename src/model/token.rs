@@ -15,6 +15,10 @@ pub enum SupportedToken {
     XRP,
     AAVE,
     ENA,
+    ZK,
+    DYDX,
+    PENGU,
+    TON
 }
 
 impl std::fmt::Display for SupportedToken {
@@ -27,6 +31,10 @@ impl std::fmt::Display for SupportedToken {
             SupportedToken::XRP => write!(f, "XRP"),
             SupportedToken::AAVE => write!(f, "AAVE"),
             SupportedToken::ENA => write!(f, "ENA"),
+            SupportedToken::ZK => write!(f, "ZK"),
+            SupportedToken::DYDX => write!(f, "DYDX"),
+            SupportedToken::PENGU => write!(f, "PENGU"),
+            SupportedToken::TON => write!(f, "TON"),
         }
     }
 }
@@ -38,10 +46,14 @@ impl Token {
                 0 => Self::eth(),
                 2 => Self::sol(),
                 7 => Self::xrp(),
+                12 => Self::ton(),
                 24 => Self::hype(),
                 25 => Self::bnb(),
                 27 => Self::aave(),
                 29 => Self::ena(),
+                47 => Self::pengu(),
+                56 => Self::zk(),
+                62 => Self::dydx(),
                 _ => panic!("Invalid market index: {}", market_index),
             },
         }
@@ -79,8 +91,24 @@ impl Token {
         Token::new(SupportedToken::ENA)
     }
 
+    pub fn zk() -> Token {
+        Token::new(SupportedToken::ZK)
+    }
+
+    pub fn dydx() -> Token {
+        Token::new(SupportedToken::DYDX)
+    }
+
+    pub fn pengu() -> Token {
+        Token::new(SupportedToken::PENGU)
+    }
+
+    pub fn ton() -> Token {
+        Token::new(SupportedToken::TON)
+    }
+
     pub fn get_supported_tokens() -> Vec<Token> {
-        vec![Self::sol(), Self::bnb(), Self::hype(), Self::aave(), Self::xrp(), Self::ena()]
+        vec![Self::aave(), Self::ena(), Self::zk(), Self::dydx(), Self::pengu(), Self::ton()]
     }
 
     /// Returns the price denomination (how much to multiply the price by)
@@ -93,6 +121,10 @@ impl Token {
             SupportedToken::XRP => 1_000_000.0,
             SupportedToken::AAVE => 1_000.0,
             SupportedToken::ENA => 100_000.0,
+            SupportedToken::ZK => 1_000_000.0,
+            SupportedToken::DYDX => 100_000.0,
+            SupportedToken::PENGU => 1_000_000.0,
+            SupportedToken::TON => 100_000.0,
         }
     }
 
@@ -107,6 +139,10 @@ impl Token {
             SupportedToken::XRP => Decimal::from(100),
             SupportedToken::AAVE => Decimal::from(100),
             SupportedToken::ENA => Decimal::from(100),
+            SupportedToken::ZK => Decimal::from(100),
+            SupportedToken::DYDX => Decimal::from(100),
+            SupportedToken::PENGU => Decimal::from(100),
+            SupportedToken::TON => Decimal::from(100),
         } 
     }
 
@@ -140,6 +176,22 @@ impl Token {
                 Exchange::Lighter => "ENA_USDC_PERP".to_string(),
                 Exchange::Backpack => "ENA_USDC_PERP".to_string(),
             },
+            SupportedToken::ZK => match exchange {
+                Exchange::Lighter => "ZK_USDC_PERP".to_string(),
+                Exchange::Backpack => "ZK_USDC_PERP".to_string(),
+            },
+            SupportedToken::DYDX => match exchange {
+                Exchange::Lighter => "DYDX_USDC_PERP".to_string(),
+                Exchange::Backpack => "DYDX_USDC_PERP".to_string(),
+            },
+            SupportedToken::PENGU => match exchange {
+                Exchange::Lighter => "PENGU_USDC_PERP".to_string(),
+                Exchange::Backpack => "PENGU_USDC_PERP".to_string(),
+            },
+            SupportedToken::TON => match exchange {
+                Exchange::Lighter => "TON_USDC_PERP".to_string(),
+                Exchange::Backpack => "TON_USDC_PERP".to_string(),
+            },
         }
     }
 
@@ -157,6 +209,10 @@ impl Token {
                 Exchange::Lighter => 7,
                 Exchange::Backpack => 7,
             },
+            SupportedToken::TON => match exchange {
+                Exchange::Lighter => 12,
+                Exchange::Backpack => 12,
+            },
             SupportedToken::HYPE => match exchange {
                 Exchange::Lighter => 24,
                 Exchange::Backpack => 24,
@@ -172,6 +228,18 @@ impl Token {
             SupportedToken::ENA => match exchange {
                 Exchange::Lighter => 29,
                 Exchange::Backpack => 29,
+            },
+            SupportedToken::ZK => match exchange {
+                Exchange::Lighter => 56,
+                Exchange::Backpack => 56,
+            },
+            SupportedToken::DYDX => match exchange {
+                Exchange::Lighter => 62,
+                Exchange::Backpack => 62,
+            },
+            SupportedToken::PENGU => match exchange {
+                Exchange::Lighter => 47,
+                Exchange::Backpack => 47,
             },
         }
     }
