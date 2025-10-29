@@ -737,13 +737,13 @@ impl LighterClient {
     /// # Returns
     ///
     /// * `Result<u64, TradingError>` - The calculated base token amount
-    pub async fn calculate_base_amount(&self, token: &Token, amount_usdc: Decimal, price: u64) -> Result<u64, TradingError> {
+    pub async fn calculate_base_amount(&self, amount_usdc: Decimal, price: u64) -> Result<u64, TradingError> {
         // Price is scaled by 10,000, so divide it
         let price_decimal = Decimal::from(price) / Decimal::from(10_000);
     
         // Calculate base amount
         let base_amount = amount_usdc / price_decimal;
-        let base_amount_scaled = base_amount * token.get_denomination();    
+        let base_amount_scaled = base_amount * Decimal::from(100);    
         let base_rounded = base_amount_scaled.round().to_string().parse::<u64>().unwrap();
         Ok(base_rounded)
     }
@@ -1111,7 +1111,7 @@ impl PerpExchange for LighterClient {
         }
 
         let price = self.get_market_price(&token, side).await?;
-        let base_amount = self.calculate_base_amount(&token, amount_usdc, price).await?;
+        let base_amount = self.calculate_base_amount(amount_usdc, price).await?;
         let order_hash = self.execute_market_order(&token, side, base_amount, price, false).await?;
         info!("#{} | Order sent: {}", self.wallet.id, order_hash);        
         let tx = self.get_order_by_hash(&order_hash).await?;

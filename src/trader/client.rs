@@ -158,7 +158,7 @@ impl TraderClient {
         info!("📋 Monitoring {} strategies:", strategies.len());
         for strategy in &strategies {
             let close_at_local = strategy.close_at + chrono::Duration::hours(8);
-            info!("🎯 Strategy {} | Token: {} | Wallets: {:?} | Close at (your local, UTC+8): {}", 
+            info!("🎯 Strategy {} | Token: {} | Wallets: {:?} | Close at: {}", 
                 strategy.id, strategy.token_symbol, strategy.wallet_ids, close_at_local.format("%H:%M"));
         }
 
@@ -363,7 +363,7 @@ impl TraderClient {
         let minutes_from_now = ((close_at_local - now_local).num_minutes()).max(0);
 
         info!(
-            "   Close at (your local, UTC+8): {} ({}), in {} minutes",
+            "   Close at: {} ({}), in {} minutes",
             close_at_local.format("%a %H:%M"),
             close_at_local.format("%Y-%m-%d"),
             minutes_from_now

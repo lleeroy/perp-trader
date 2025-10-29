@@ -1,4 +1,3 @@
-use rust_decimal::Decimal;
 use crate::model::Exchange;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -18,7 +17,10 @@ pub enum SupportedToken {
     ZK,
     DYDX,
     PENGU,
-    TON
+    TON,
+    EDEN,
+    GMX,
+    GRASS
 }
 
 impl std::fmt::Display for SupportedToken {
@@ -35,6 +37,9 @@ impl std::fmt::Display for SupportedToken {
             SupportedToken::DYDX => write!(f, "DYDX"),
             SupportedToken::PENGU => write!(f, "PENGU"),
             SupportedToken::TON => write!(f, "TON"),
+            SupportedToken::EDEN => write!(f, "EDEN"),
+            SupportedToken::GMX => write!(f, "GMX"),
+            SupportedToken::GRASS => write!(f, "GRASS"),
         }
     }
 }
@@ -52,8 +57,11 @@ impl Token {
                 27 => Self::aave(),
                 29 => Self::ena(),
                 47 => Self::pengu(),
+                52 => Self::grass(),
                 56 => Self::zk(),
+                61 => Self::gmx(),
                 62 => Self::dydx(),
+                89 => Self::eden(),
                 _ => panic!("Invalid market index: {}", market_index),
             },
         }
@@ -107,8 +115,28 @@ impl Token {
         Token::new(SupportedToken::TON)
     }
 
+    pub fn eden() -> Token {
+        Token::new(SupportedToken::EDEN)
+    }
+
+    pub fn gmx() -> Token {
+        Token::new(SupportedToken::GMX)
+    }
+
+    pub fn grass() -> Token {
+        Token::new(SupportedToken::GRASS)
+    }
+
     pub fn get_supported_tokens() -> Vec<Token> {
-        vec![Self::aave(), Self::ena(), Self::zk(), Self::dydx(), Self::pengu(), Self::ton()]
+        vec![
+            Self::zk(), 
+            Self::dydx(), 
+            Self::pengu(), 
+            Self::ton(), 
+            Self::eden(), 
+            Self::gmx(), 
+            Self::grass()
+        ]
     }
 
     /// Returns the price denomination (how much to multiply the price by)
@@ -125,25 +153,10 @@ impl Token {
             SupportedToken::DYDX => 100_000.0,
             SupportedToken::PENGU => 1_000_000.0,
             SupportedToken::TON => 100_000.0,
+            SupportedToken::EDEN => 100_000.0,
+            SupportedToken::GMX => 10_000.0,
+            SupportedToken::GRASS => 100_000.0,
         }
-    }
-
-    /// Returns the denomination multiplier for base amount calculation
-    /// This is specific to how each token is represented on the exchange
-    pub fn get_denomination(&self) -> Decimal {
-        match self.symbol {
-            SupportedToken::ETH => Decimal::from(100),  
-            SupportedToken::BNB => Decimal::from(100),      
-            SupportedToken::SOL => Decimal::from(100),   
-            SupportedToken::HYPE => Decimal::from(100),
-            SupportedToken::XRP => Decimal::from(100),
-            SupportedToken::AAVE => Decimal::from(100),
-            SupportedToken::ENA => Decimal::from(100),
-            SupportedToken::ZK => Decimal::from(100),
-            SupportedToken::DYDX => Decimal::from(100),
-            SupportedToken::PENGU => Decimal::from(100),
-            SupportedToken::TON => Decimal::from(100),
-        } 
     }
 
     pub fn get_symbol_string(&self, exchange: Exchange) -> String {
@@ -191,6 +204,18 @@ impl Token {
             SupportedToken::TON => match exchange {
                 Exchange::Lighter => "TON_USDC_PERP".to_string(),
                 Exchange::Backpack => "TON_USDC_PERP".to_string(),
+            },
+            SupportedToken::EDEN => match exchange {
+                Exchange::Lighter => "EDEN_USDC_PERP".to_string(),
+                Exchange::Backpack => "EDEN_USDC_PERP".to_string(),
+            },
+            SupportedToken::GMX => match exchange {
+                Exchange::Lighter => "GMX_USDC_PERP".to_string(),
+                Exchange::Backpack => "GMX_USDC_PERP".to_string(),
+            },
+            SupportedToken::GRASS => match exchange {
+                Exchange::Lighter => "GRASS_USDC_PERP".to_string(),
+                Exchange::Backpack => "GRASS_USDC_PERP".to_string(),
             },
         }
     }
@@ -240,6 +265,18 @@ impl Token {
             SupportedToken::PENGU => match exchange {
                 Exchange::Lighter => 47,
                 Exchange::Backpack => 47,
+            },
+            SupportedToken::EDEN => match exchange {
+                Exchange::Lighter => 89,
+                Exchange::Backpack => 89,
+            },
+            SupportedToken::GMX => match exchange {
+                Exchange::Lighter => 61,
+                Exchange::Backpack => 61,
+            },
+            SupportedToken::GRASS => match exchange {
+                Exchange::Lighter => 52,
+                Exchange::Backpack => 52,
             },
         }
     }

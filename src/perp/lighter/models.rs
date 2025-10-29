@@ -144,6 +144,7 @@ impl LighterOrder {
 
 
 impl LighterPosition {
+    #[allow(unused)]
     pub fn get_percentage_to_liquidation(&self) -> Decimal {
         let liq_price = self.liquidation_price;
         let entry_price = self.avg_entry_price;

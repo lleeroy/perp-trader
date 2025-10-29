@@ -22,6 +22,7 @@ where
     }
 }
 
+#[allow(unused)]
 pub fn deserialize_timestamp<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
 where
     D: serde::Deserializer<'de>,

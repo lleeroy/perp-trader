@@ -21,7 +21,7 @@ use rand::Rng;
 use rust_decimal::Decimal;
 use tokio::time;
 
-use crate::{perp::PerpExchange, trader::client::TraderClient};
+use crate::trader::client::TraderClient;
 use colored::*;
 use std::io::Write;
 
@@ -84,11 +84,10 @@ async fn main() -> Result<()> {
 
     // let wallet = trader::wallet::Wallet::load_from_json(1)?;
     // let lighter_client = perp::lighter::client::LighterClient::new(&wallet).await?;
-    // let token = model::token::Token::pengu();
+    // let token = model::token::Token::grass();
     // let side = model::position::PositionSide::Long;
     // let close_at = chrono::Utc::now() + chrono::Duration::days(1);
     // let amount_usdc = rust_decimal::Decimal::from(10);
-
     // lighter_client.open_position(token, side, close_at, amount_usdc).await?;
     // lighter_client.close_all_positions().await?;
     // loop {};
