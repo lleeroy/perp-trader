@@ -81,6 +81,7 @@ async fn main() -> Result<()> {
         .init();
 
     info!("🚀 Starting perp-trader application...");
+    test::test_ranger_client().await?;
 
     // let wallet = trader::wallet::Wallet::load_from_json(1)?;
     // let lighter_client = perp::lighter::client::LighterClient::new(&wallet).await?;

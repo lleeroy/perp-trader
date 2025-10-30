@@ -1,8 +1,8 @@
 use std::{fs::File, io::BufReader};
 use serde::{Deserialize, Serialize};
 use anyhow::{Context, Result};
-
-use crate::{config::AppConfig, error::TradingError, helpers::encode, perp::{lighter::client::LighterClient}};
+use solana_sdk::signature::{Keypair, Signer};
+use crate::{config::AppConfig, error::TradingError, helpers::encode, perp::lighter::client::LighterClient};
 
 /// Wallet struct containing API secrets for authentication with exchanges
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -15,8 +15,8 @@ pub struct Wallet {
     pub backpack_api_secret: String,
     pub proxy: Option<String>,
     pub lighter_api_key: String,
+    pub solana_private_key: Option<String>,
 }
-
 
 #[allow(unused)]
 #[derive(Debug, Clone)]
@@ -36,8 +36,6 @@ impl WalletTradingClient {
 #[allow(unused)]
 impl Wallet {
     /// Creates a new Wallet from the given id by loading from "api-keys.json"
-    ///
-    /// This only parses the relevant fields from JSON, then creates a LighterClient with those fields and unites everything in the Wallet struct.
     pub fn load_from_json(id: u8) -> Result<Self, TradingError> {
         use serde_json::Value;
 
@@ -105,6 +103,17 @@ impl Wallet {
             return Err(TradingError::InvalidInput("Private key is empty".to_string()));
         }
 
+        let solana_private_key = wallet_value.get("solana_private_key")
+            .and_then(|v| v.as_str())
+            .map(|s| {
+                if s.is_empty() {
+                    None
+                } else {
+                    Some(s.to_string())
+                }
+            })
+            .unwrap_or(None);
+
         Ok(Wallet {
             id,
             proxy,
@@ -113,6 +122,39 @@ impl Wallet {
             backpack_api_key,
             backpack_api_secret,
             lighter_api_key,
+            solana_private_key,
         })
+    }
+
+
+    /// Sign a message with the Solana private key
+    /// 
+    /// # Arguments
+    /// * `message` - The message bytes to sign
+    /// 
+    /// # Returns
+    /// * `Result<Vec<u8>, TradingError>` - The signature bytes
+    pub fn sign_solana_message(&self, message: &[u8]) -> Result<Vec<u8>, TradingError> {
+        let private_key = self.solana_private_key
+            .as_ref()
+            .ok_or_else(|| TradingError::InvalidInput("Solana private key not found".to_string()))?;
+
+        // Create keypair from bytes
+        let keypair = Keypair::from_base58_string(&private_key);
+
+        // Sign the message
+        let signature = keypair.sign_message(message);
+
+        Ok(signature.as_ref().to_vec())
+    }
+
+    /// Create a Solana keypair from the stored private key
+    /// This is a helper method for operations that need the keypair directly
+    pub fn get_solana_keypair(&self) -> Result<Keypair, TradingError> {
+        let private_key = self.solana_private_key
+            .as_ref()
+            .ok_or_else(|| TradingError::InvalidInput("Solana private key not found".to_string()))?;
+
+        Ok(Keypair::from_base58_string(&private_key))
     }
 }
