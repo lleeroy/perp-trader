@@ -62,9 +62,7 @@ impl LighterClient {
         let api_key_index = DEFAULT_API_KEY_INDEX;
         let account_index = Self::get_account_index(&base_url, wallet).await?;
 
-        let (api_private_key, api_public_key) = if !wallet.lighter_api_key.is_empty() {
-            info!("#{} | Using existing API key from wallet", wallet.id);
-            
+        let (api_private_key, api_public_key) = if !wallet.lighter_api_key.is_empty() {            
             // Verify the existing key is still valid
             if Self::verify_existing_api_key(&base_url, wallet, &wallet.lighter_api_key, account_index).await? {
                 let existing_private_key = wallet.lighter_api_key.clone();
@@ -244,14 +242,24 @@ impl LighterClient {
             }
         }
         
+        // Convert HashMap to Vec, sort by ID, then convert to serde_json::Map
+        let mut wallet_vec: Vec<(String, serde_json::Value)> = wallets.into_iter().collect();
+        wallet_vec.sort_by(|a, b| {
+            let id_a = a.0.parse::<u32>().unwrap_or(u32::MAX);
+            let id_b = b.0.parse::<u32>().unwrap_or(u32::MAX);
+            id_a.cmp(&id_b)
+        });
+        
+        let sorted_wallets: serde_json::Map<String, serde_json::Value> = wallet_vec.into_iter().collect();
+        
         std::fs::write(
             wallets_path, 
-            serde_json::to_string_pretty(&wallets).map_err(|e| TradingError::InvalidInput(e.to_string()))?
+            serde_json::to_string_pretty(&sorted_wallets).map_err(|e| TradingError::InvalidInput(e.to_string()))?
         ).map_err(|e| TradingError::InvalidInput(e.to_string()))?;
 
         
         // For now, we'll just log that we would save it
-        info!("#{} | API key would be saved to wallet: {}", wallet.id, api_private_key);
+        info!("#{} | API key saved to wallet: {}", wallet.id, api_private_key);
         
         Ok(())
     }
@@ -277,7 +285,6 @@ impl LighterClient {
         api_private_key: &str,
         account_index: u32,
     ) -> Result<bool, TradingError> {
-        info!("#{} | Verifying existing API key...", wallet.id);
         
         // Try to create a signer client with the existing key
         let signer_client = match SignerClient::new(
@@ -302,10 +309,9 @@ impl LighterClient {
             signer_client,
         };
 
-        // Try to get account info - if this succeeds, the key is valid
-        match client.get_account().await {
+        // Try to get account points - if this succeeds, the key is valid
+        match client.get_account_points().await {
             Ok(_) => {
-                info!("#{} | Existing API key is valid", wallet.id);
                 Ok(true)
             }
             Err(_) => {
@@ -332,7 +338,7 @@ impl LighterClient {
     /// * No accounts are found for the wallet
     /// * Response parsing fails
     async fn get_account(&self) -> Result<LighterAccount, TradingError> {
-        let url = format!("{}/account?by=l1_address&value={}", self.base_url, self.wallet.address);
+        let url = format!("{}/account?by=l1_address&value={}", self.base_url, self.wallet.get_ethereum_address()?);
         let response = Request::process_request(Method::GET, url, None, None, self.wallet.proxy.clone()).await?;
 
         match response["accounts"].as_array() {
@@ -372,7 +378,7 @@ impl LighterClient {
     /// * Account index not found in response
     /// * Response parsing fails
     async fn get_account_index(base_url: &str, wallet: &Wallet) -> Result<u32, TradingError> {
-        let url = format!("{}/accountsByL1Address?l1_address={}", base_url, wallet.address);
+        let url = format!("{}/accountsByL1Address?l1_address={}", base_url, wallet.get_ethereum_address()?);
         let response = Request::process_request(Method::GET, url, None, None, wallet.proxy.clone()).await?;
 
         match response["sub_accounts"][0]["index"].as_u64() {
@@ -452,8 +458,8 @@ impl LighterClient {
                 let price_decimal = Decimal::from_f64(price_f64).unwrap();
 
                 let adjusted_price = match side {
-                    PositionSide::Short => price_decimal * Decimal::from_f64(0.998).unwrap(),
-                    PositionSide::Long => price_decimal * Decimal::from_f64(1.002).unwrap(),
+                    PositionSide::Short => price_decimal * Decimal::from_f64(0.995).unwrap(),
+                    PositionSide::Long => price_decimal * Decimal::from_f64(1.005).unwrap(),
                 };
 
                 // Use token's price denomination to scale the price correctly
@@ -834,23 +840,6 @@ impl LighterClient {
         Ok(())
     }
 
-
-    async fn execute_limit_order(
-        &self,
-        token: &Token,
-        side: PositionSide,
-        base_amount: u64,
-        price: u64,
-        close_position: bool,
-    ) -> Result<String, TradingError> {
-        let market_index = token.get_market_index(Exchange::Lighter);
-        let is_ask = matches!(side, PositionSide::Short);
-        let reduce_only = matches!(close_position, true);
-        let mut last_nonce_error: Option<String> = None;
-
-        todo!("Implement limit order execution");
-        Ok(String::new())
-    }
 
     /// Executes a market order with retry logic for nonce errors.
     ///

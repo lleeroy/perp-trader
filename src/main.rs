@@ -21,7 +21,7 @@ use rand::Rng;
 use rust_decimal::Decimal;
 use tokio::time;
 
-use crate::{perp::lighter::{client::LighterClient, models::LighterPoints}, trader::client::TraderClient};
+use crate::{perp::lighter::{client::LighterClient}, trader::client::TraderClient};
 use colored::*;
 use std::io::Write;
 
@@ -81,19 +81,6 @@ async fn main() -> Result<()> {
         .init();
 
     info!("🚀 Starting perp-trader application...");
-    // test::test_ranger_client().await?;
-    // let wallet = trader::wallet::Wallet::load_from_json(2)?;
-    // let lighter_client = perp::lighter::client::LighterClient::new(&wallet).await?;
-    // let points = lighter_client.get_account_points().await?;
-    // println!("Total points: {:.2} last week: {:.2}", points.user_total_points, points.user_last_week_points);
-
-    // let token = model::token::Token::grass();
-    // let side = model::position::PositionSide::Long;
-    // let close_at = chrono::Utc::now() + chrono::Duration::days(1);
-    // let amount_usdc = rust_decimal::Decimal::from(10);
-    // lighter_client.open_position(token, side, close_at, amount_usdc).await?;
-    // lighter_client.close_all_positions().await?;
-    // loop {};
 
     // Load all available wallets
     let wallet_ids = load_all_wallet_ids()?;
@@ -239,6 +226,7 @@ async fn main() -> Result<()> {
         }
         Action::ShowAllWalletsPoints => {
             use futures::future;
+
             // Run all async blocks in parallel and handle their results correctly
             let wallet_points = future::try_join_all(
                 trader_client.wallets.iter().map(|wallet| {
@@ -250,7 +238,8 @@ async fn main() -> Result<()> {
             ).await?;
 
             for i in 0..wallet_points.len() {
-                info!("#{}: {:.2} points | last week: {:.2}", i, wallet_points[i].user_total_points, wallet_points[i].user_last_week_points);
+                info!("#{:>3}: total: {:.2} points | last week: {:.2}", 
+                i + 1, wallet_points[i].user_total_points, wallet_points[i].user_last_week_points);
             }
 
             let last_week_points = wallet_points.iter().map(|points| points.user_last_week_points).sum::<f64>();

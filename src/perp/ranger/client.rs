@@ -603,22 +603,27 @@ impl PerpExchange for RangerClient {
         todo!()
     }
 
+    #[allow(unused)]
     async fn get_balance(&self, asset: &str) -> Result<Balance, TradingError> {
         todo!()
     }
 
+    #[allow(unused)]
     async fn open_position(&self, token: Token, side: PositionSide, close_at: DateTime<Utc>, amount_usdc: Decimal) -> Result<Position, TradingError> {
         todo!()
     }
 
+    #[allow(unused)]
     async fn close_position(&self, position: &Position) -> Result<Position, TradingError> {
         todo!()
     }
 
+    #[allow(unused)]
     async fn close_all_positions(&self) -> Result<(), TradingError> {
         todo!()
     }
 
+    #[allow(unused)]
     async fn get_usdc_balance(&self) -> Result<Decimal, TradingError> {
         todo!()
     }

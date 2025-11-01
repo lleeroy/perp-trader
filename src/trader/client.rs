@@ -407,7 +407,7 @@ impl TraderClient {
     pub async fn farm_points_on_lighter_from_multiple_wallets(&self) -> Result<Vec<TradingStrategy>, TradingError> {
         info!("🎯 Starting Lighter farming strategy with {} wallets", self.wallets.len());
         let mut rng = rand::thread_rng();
-        let duration_minutes = rng.gen_range(60..=240);
+        let duration_minutes = rng.gen_range(120..=300);
 
         // Handle conflicting strategies across our wallets (retry-after-close behavior)
         self.handle_conflicting_strategies().await?;

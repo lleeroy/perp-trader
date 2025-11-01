@@ -10,7 +10,6 @@ use crate::{config::AppConfig, error::TradingError, helpers::encode, perp::light
 pub struct Wallet {
     pub id: u8,
     pub private_key: String,
-    pub address: String,
     pub backpack_api_key: String,
     pub backpack_api_secret: String,
     pub proxy: Option<String>,
@@ -62,11 +61,6 @@ impl Wallet {
             .ok_or_else(|| TradingError::InvalidInput("Missing field private_key".into()))?
             .to_string();
 
-        let address = wallet_value.get("address")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| TradingError::InvalidInput("Missing field address".into()))?
-            .to_string();
-
         let proxy = wallet_value.get("proxy")
             .and_then(|v| v.as_str())
             .map(|s| {
@@ -96,9 +90,7 @@ impl Wallet {
         let decrypted_private_key = encode::decrypt_private_key(&private_key, &password)
             .map_err(|e| TradingError::InvalidInput(format!("Failed to decrypt private key: {e}")))?;
 
-        if address.is_empty() {
-            return Err(TradingError::InvalidInput("Address is empty".to_string()));
-        }
+
         if decrypted_private_key.is_empty() {
             return Err(TradingError::InvalidInput("Private key is empty".to_string()));
         }
@@ -118,7 +110,6 @@ impl Wallet {
             id,
             proxy,
             private_key: decrypted_private_key,
-            address,
             backpack_api_key,
             backpack_api_secret,
             lighter_api_key,
@@ -147,6 +138,22 @@ impl Wallet {
 
         Ok(signature.as_ref().to_vec())
     }
+
+
+    /// Retrieves the Ethereum wallet address from the stored private key using alloy,
+    /// returning the address in EIP-55 checksum (original on-chain) format.
+    pub fn get_ethereum_address(&self) -> Result<String, TradingError> {
+        use alloy::signers::local::PrivateKeySigner;
+        use alloy::primitives::Address;
+
+        let wallet = self.private_key
+            .parse::<PrivateKeySigner>()
+            .map_err(|e| TradingError::InvalidInput(format!("Invalid Ethereum private key: {e}")))?;
+
+        let address: Address = wallet.address();
+        Ok(address.to_checksum(None))
+    }
+
 
     /// Create a Solana keypair from the stored private key
     /// This is a helper method for operations that need the keypair directly
