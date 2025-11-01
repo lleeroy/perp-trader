@@ -12,7 +12,7 @@ use alloy::signers::local::PrivateKeySigner;
 use alloy::primitives::eip191_hash_message;
 use crate::error::RequestError;
 use crate::model::PositionStatus;
-use crate::perp::lighter::models::{LighterPosition, LighterTx};
+use crate::perp::lighter::models::{LighterPoints, LighterPosition, LighterTx};
 use crate::{error::TradingError, model::{balance::Balance, token::Token, Exchange, Position, PositionSide}, perp::{lighter::{models::{LighterAccount, LighterOrder}, signer::SignerClient}, PerpExchange}, request::Request, trader::wallet::Wallet};
 use crate::perp::lighter::signer::{TX_TYPE_CHANGE_PUB_KEY, TX_TYPE_CREATE_ORDER, TX_TYPE_UPDATE_LEVERAGE};
 
@@ -452,8 +452,8 @@ impl LighterClient {
                 let price_decimal = Decimal::from_f64(price_f64).unwrap();
 
                 let adjusted_price = match side {
-                    PositionSide::Short => price_decimal * Decimal::from_f64(0.995).unwrap(),
-                    PositionSide::Long => price_decimal * Decimal::from_f64(1.005).unwrap(),
+                    PositionSide::Short => price_decimal * Decimal::from_f64(0.998).unwrap(),
+                    PositionSide::Long => price_decimal * Decimal::from_f64(1.002).unwrap(),
                 };
 
                 // Use token's price denomination to scale the price correctly
@@ -723,6 +723,45 @@ impl LighterClient {
         result.round().to_string().parse::<u64>().map_err(|e| TradingError::InvalidInput(e.to_string()))
     }
 
+
+    /// Retrieves the account's Lighter Points (total and last week) via a referral API call.
+    ///
+    /// This method generates an authentication token, constructs authorization headers,
+    /// and sends a GET request to the `/referral/points` endpoint to fetch the points
+    /// associated with the current account.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<LighterPoints, TradingError>` - Struct containing user's Lighter Points data
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TradingError`] if:
+    /// - Authentication fails (token generation fails)
+    /// - Request fails (network issues, non-2xx status)
+    /// - Response cannot be parsed into `LighterPoints`
+    pub async fn get_account_points(&self) -> Result<LighterPoints, TradingError> {
+        let auth_token = self.signer_client.create_auth_token_with_expiry(None, None)?;
+        let url = format!("{}/referral/points?account_index={}", self.base_url, self.account_index);
+
+        let mut headers = HeaderMap::new();
+        headers.insert("Accept", "*/*".parse().unwrap());
+        headers.insert("Accept-Language", "en-US,en;q=0.9".parse().unwrap());
+        headers.insert("Authorization", auth_token.parse().unwrap());
+        headers.insert("Connection", "keep-alive".parse().unwrap());
+        headers.insert("Origin", "https://app.lighter.xyz".parse().unwrap());
+        headers.insert("PreferAuthServer", "true".parse().unwrap());
+        headers.insert("Referer", "https://app.lighter.xyz/".parse().unwrap());
+        
+        let response = Request::process_request(Method::GET, url, Some(headers), None, self.wallet.proxy.clone()).await?;
+        let points: Result<LighterPoints, _> = serde_json::from_value(response.clone());
+        
+        match points {
+            Ok(points) => Ok(points),
+            Err(e) => return Err(TradingError::InvalidInput(format!("Failed to parse points: {:?}", e))),
+        }
+    }
+
     /// Calculates the base token amount for a given USDC investment at specified price.
     ///
     /// This method converts a USDC-denominated position size into the equivalent
@@ -793,6 +832,24 @@ impl LighterClient {
         let leverage_hash = self.send_tx(body).await?;
         info!("#{} | Leverage updated successfully! Hash: {}", self.wallet.id, leverage_hash);
         Ok(())
+    }
+
+
+    async fn execute_limit_order(
+        &self,
+        token: &Token,
+        side: PositionSide,
+        base_amount: u64,
+        price: u64,
+        close_position: bool,
+    ) -> Result<String, TradingError> {
+        let market_index = token.get_market_index(Exchange::Lighter);
+        let is_ask = matches!(side, PositionSide::Short);
+        let reduce_only = matches!(close_position, true);
+        let mut last_nonce_error: Option<String> = None;
+
+        todo!("Implement limit order execution");
+        Ok(String::new())
     }
 
     /// Executes a market order with retry logic for nonce errors.

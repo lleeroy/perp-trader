@@ -1,3 +1,5 @@
+use rust_decimal::Decimal;
+use rust_decimal_macros::dec;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -101,7 +103,7 @@ pub struct HyperliquidPayload {
     pub estimated_fee_usd: f64,
     pub place_order: PlaceOrder,
     pub total_price: f64,
-    pub update_isolated_margin: UpdateIsolatedMargin,
+    pub update_isolated_margin: Option<UpdateIsolatedMargin>,
     pub update_leverage: UpdateLeverage,
 }
 

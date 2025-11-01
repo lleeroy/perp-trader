@@ -28,7 +28,7 @@ use colored::*;
 
 
 pub struct TraderClient {
-    wallets: Vec<Wallet>,
+    pub wallets: Vec<Wallet>,
     position_storage: PositionStorage,
     strategy_storage: StrategyStorage,
     wallet_trading_clients: Vec<WalletTradingClient>,   
@@ -284,7 +284,7 @@ impl TraderClient {
         let allocations = TradingStrategy::generate_balanced_allocations(&wallet_balances)?;
 
 		// Step 3: Randomly select a token to trade
-		let selected_token = self.select_random_token()?;
+		let selected_token = self.select_random_token(&Exchange::Backpack)?;
         info!("🎲 Selected token: {:?}", selected_token.symbol);
 
         // Step 4: Open positions for each allocation (in parallel)
@@ -458,7 +458,7 @@ impl TraderClient {
             let allocations = TradingStrategy::generate_balanced_allocations(&group_balances)?;
 
             // Select a random token for this group (different for each group)
-            let selected_token = self.select_random_token()?;
+            let selected_token = self.select_random_token(&Exchange::Lighter)?;
             let token_symbol = selected_token.symbol.to_string();
             info!("🎲 Group {} selected token: {:?}", group_index + 1, selected_token.symbol);
 
@@ -897,7 +897,7 @@ impl TraderClient {
     /// # Returns
     /// * `Ok(LighterClient)` - Configured client for the wallet
     /// * `Err(TradingError)` - If wallet client not found
-    fn get_lighter_client(&self, wallet_id: u8) -> Result<LighterClient, TradingError> {
+    pub fn get_lighter_client(&self, wallet_id: u8) -> Result<LighterClient, TradingError> {
         Ok(self.wallet_trading_clients
             .iter().find(|w| w.wallet.id == wallet_id)
             .ok_or_else(|| TradingError::InvalidInput(format!("Lighter client for wallet #{} not found", wallet_id)))?
@@ -983,8 +983,8 @@ impl TraderClient {
     /// # Returns
     /// * `Ok(Token)` - Randomly selected token for trading
     /// * `Err(TradingError)` - If no supported tokens are available
-	pub fn select_random_token(&self) -> Result<Token, TradingError> {
-		let supported = Token::get_supported_tokens();
+	pub fn select_random_token(&self, exchange: &Exchange) -> Result<Token, TradingError> {
+		let supported = Token::get_supported_tokens(exchange);
 		let mut rng = rand::thread_rng();
 
 		supported
@@ -1046,12 +1046,6 @@ impl TraderClient {
 
         info!("✅ No active positions found on any wallets.");
         Ok(())
-    }
-
-
-    #[allow(unused)]
-    pub fn get_supported_tokens(&self, exchange: Exchange) -> Vec<Token> {
-        Token::get_supported_tokens()
     }
 
     // ===== Position Storage Methods =====

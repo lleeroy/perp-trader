@@ -21,7 +21,7 @@ use rand::Rng;
 use rust_decimal::Decimal;
 use tokio::time;
 
-use crate::trader::client::TraderClient;
+use crate::{perp::lighter::{client::LighterClient, models::LighterPoints}, trader::client::TraderClient};
 use colored::*;
 use std::io::Write;
 
@@ -81,10 +81,12 @@ async fn main() -> Result<()> {
         .init();
 
     info!("🚀 Starting perp-trader application...");
-    test::test_ranger_client().await?;
-
-    // let wallet = trader::wallet::Wallet::load_from_json(1)?;
+    // test::test_ranger_client().await?;
+    // let wallet = trader::wallet::Wallet::load_from_json(2)?;
     // let lighter_client = perp::lighter::client::LighterClient::new(&wallet).await?;
+    // let points = lighter_client.get_account_points().await?;
+    // println!("Total points: {:.2} last week: {:.2}", points.user_total_points, points.user_last_week_points);
+
     // let token = model::token::Token::grass();
     // let side = model::position::PositionSide::Long;
     // let close_at = chrono::Utc::now() + chrono::Duration::days(1);
@@ -123,6 +125,7 @@ async fn main() -> Result<()> {
         CloseAllStrategies,
         CloseAllPositions,
         ShowAllWalletsBalances,
+        ShowAllWalletsPoints,
     }
 
     // Determine action based on environment
@@ -138,6 +141,7 @@ async fn main() -> Result<()> {
             "✋ Close all active strategies",
             "💸 Close all active positions",
             "💰 Show all wallets balances",
+            "🏆 Show all wallets points",
         ];
 
         let selection = Select::new("Select operation:", options.clone())
@@ -150,6 +154,7 @@ async fn main() -> Result<()> {
             s if s == options[2] => Action::CloseAllStrategies,
             s if s == options[3] => Action::CloseAllPositions,
             s if s == options[4] => Action::ShowAllWalletsBalances,
+            s if s == options[5] => Action::ShowAllWalletsPoints,
             _ => {
                 warn!("Invalid selection");
                 return Ok(());
@@ -163,6 +168,7 @@ async fn main() -> Result<()> {
             Action::CloseAllStrategies => "Close all active strategies?",
             Action::CloseAllPositions => "Close all open positions?",
             Action::ShowAllWalletsBalances => "Show all wallets balances?",
+            Action::ShowAllWalletsPoints => "Show all wallets points?",
         };
 
         let should_continue = Confirm::new(confirmation_message)
@@ -230,6 +236,26 @@ async fn main() -> Result<()> {
 
             let total_balance = wallet_balances.iter().map(|(_, balance)| balance).sum::<Decimal>();
             info!("Total balance: {:.2}$", total_balance);
+        }
+        Action::ShowAllWalletsPoints => {
+            use futures::future;
+            // Run all async blocks in parallel and handle their results correctly
+            let wallet_points = future::try_join_all(
+                trader_client.wallets.iter().map(|wallet| {
+                    async move {
+                        let lighter_client = LighterClient::new(&wallet).await?;
+                        lighter_client.get_account_points().await
+                    }
+                })
+            ).await?;
+
+            for i in 0..wallet_points.len() {
+                info!("#{}: {:.2} points | last week: {:.2}", i, wallet_points[i].user_total_points, wallet_points[i].user_last_week_points);
+            }
+
+            let last_week_points = wallet_points.iter().map(|points| points.user_last_week_points).sum::<f64>();
+            let total_points = wallet_points.iter().map(|points| points.user_total_points).sum::<f64>();
+            info!("total points: {:.2} | last week: {:.2}", total_points, last_week_points);
         }
     }
 

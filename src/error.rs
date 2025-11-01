@@ -24,7 +24,7 @@ pub enum RequestError {
 
 #[derive(Error, Debug)]
 pub enum TradingError {
-    #[error("Authentication failed: {0}")]
+    #[error("Authentication failed")]
     AuthenticationFailed(String),
 
     #[error("Invalid input: {0}")]

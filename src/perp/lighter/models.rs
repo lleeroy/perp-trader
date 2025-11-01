@@ -24,6 +24,13 @@ pub struct LighterAccount {
     pub positions: Option<Vec<LighterPosition>>,
 }
 
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LighterPoints {
+    pub user_total_points: f64,
+    pub user_last_week_points: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LighterPosition {
     pub market_id: i32,

@@ -1,11 +1,11 @@
 use async_trait::async_trait;
 use base64::Engine;
 use chrono::{DateTime, Utc};
-use http::{HeaderMap};
-use rust_decimal::Decimal;
+use http::{HeaderMap, Method};
+use rust_decimal::{prelude::FromPrimitive, Decimal};
 use serde_json::json;
 use solana_sdk::signer::Signer;
-use crate::{error::TradingError, model::{balance::Balance, token::Token, Exchange, Position, PositionSide}, perp::{ranger::models::{AuthRequest, AuthResponse, MarketOrderRequest, MarketOrderResponse}, PerpExchange}, trader::wallet::Wallet};
+use crate::{error::TradingError, model::{balance::Balance, token::Token, Exchange, Position, PositionSide, PositionStatus}, perp::{ranger::models::{AuthRequest, AuthResponse, MarketOrderRequest, MarketOrderResponse}, PerpExchange}, request::Request, trader::wallet::Wallet};
 
 
 /// Base URLs for Ranger Finance API endpoints
@@ -13,6 +13,7 @@ const BASE_URL_DATA: &str = "https://sor-437363704888.asia-northeast1.run.app";
 const BASE_URL_TRADE: &str = "https://www.app.ranger.finance/api/hyperliquid";
 const PRIVY_AUTH_URL: &str = "https://auth.privy.io/api/v1/siws/authenticate";
 const PRIVY_APP_ID: &str = "cmeiaw35f00dzjl0bztzhen22";
+const API_ACCESS_TOKEN: &str = "www.app.ranger.finance-1761716458384__d05d82036014beb4ed77cb628db90c7b119a0e346d7244837caea723733deff3";
 
 
 /// Client for interacting with Ranger Finance perpetual exchange
@@ -205,38 +206,147 @@ impl RangerClient {
     pub async fn open_position(
         &self, 
         token: &Token, 
-        side: PositionSide, 
-        base_amount: f64, 
+        side: PositionSide,
+        close_at: DateTime<Utc>,
         amount_usdc: f64, 
-    ) -> Result<MarketOrderResponse, TradingError> {
-        let client = reqwest::Client::new();
+    ) -> Result<Position, TradingError> {
+        let price = self.get_token_price(token).await?;
+        info!("#{} | Token: {}, Price: {}", self.wallet.id, token.symbol, price);
+        let base_amount = self.build_base_amount(amount_usdc, price)?;
+        info!("#{} | Base amount: {}", self.wallet.id, base_amount);
+
         let headers = self.build_trade_headers()?;
         let url = format!("{}/increase_position", self.base_url_trade);
         let payload: MarketOrderResponse = self.build_open_position_payload(token, side, base_amount, amount_usdc).await?;
+        
+        println!("Headers: {:?}", headers);
+        println!("Payload: {:?}", payload.hyperliquid_payload);
+
+        let response = Request::process_request(
+            Method::POST,
+            url,
+            Some(headers),
+            Some(json!({"order": payload.hyperliquid_payload}).to_string()),
+            self.wallet.proxy.clone()
+        ).await;
+
+        match response {
+            Ok(response) => {
+                let response_json = response.get("message").and_then(|message| message.as_str()).unwrap_or_default();
+                if response_json.contains("Successfully increased position!") {
+                    let order_id = response.get("oid").and_then(|order_id| order_id.as_i64()).unwrap_or_default();
+                    
+                    return Ok(Position {
+                        wallet_id: self.wallet.id,
+                        id: order_id.to_string(),
+                        strategy_id: None,
+                        exchange: Exchange::Ranger,
+                        symbol: token.get_symbol_string(Exchange::Ranger),
+                        side,
+                        size: Decimal::from_f64(base_amount).unwrap(),
+                        status: PositionStatus::Open,
+                        opened_at: Utc::now(),
+                        close_at,
+                        closed_at: None,
+                        realized_pnl: None,
+                        updated_at: Utc::now(),
+                    });
+                } else {
+                    return Err(TradingError::OrderExecutionFailed(response_json.to_string()));
+                }
+            }
+            Err(e) => {
+                return Err(TradingError::OrderExecutionFailed(e.to_string()));
+            }
+        }
+    }
+
+    /// Fetches the current USD price for a given token by querying the external spot pricing API.
+    ///
+    /// # Arguments
+    ///
+    /// * `token` - The token for which to fetch the price.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Decimal)` containing the price if retrieval is successful.
+    /// * `Err(TradingError)` if the price cannot be fetched or parsed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `TradingError::MarketDataUnavailable` for API failures, non-200 responses, or if the
+    /// price information is missing or incorrectly formatted in the API response.
+    async fn get_token_price(&self, token: &Token) -> Result<f64, TradingError> {
+        let client = reqwest::Client::new();
+        let headers = self.build_data_headers();
+        let address = token.get_address()?;
+        let url = format!("https://prod-spot-pricing-api-437363704888.asia-northeast1.run.app/defi/multi_price?list_address={}", address);
 
         let response = client
-            .post(&url)
+            .get(url)
             .headers(headers)
-            .json(&payload.hyperliquid_payload)
             .send()
             .await
             .map_err(|e| TradingError::HttpError(e))?;
 
         if !response.status().is_success() {
-            let status = response.status();
-            let error_text = response.text().await.unwrap_or_default();
-            return Err(TradingError::OrderExecutionFailed(format!(
-                "HTTP {}: {}",
-                status, error_text
+            return Err(TradingError::MarketDataUnavailable(format!(
+                "Failed to get token price: HTTP {}: {}",
+                response.status(),
+                response.text().await.unwrap_or_default()
             )));
         }
 
-        let response_text = response.text().await.unwrap_or_default();
-        println!("Second response: {:#?}", response_text);
+        let response_json = response.json::<serde_json::Value>().await.map_err(|e| TradingError::HttpError(e))?;
 
-        todo!("execute market order");
+        // Traverse: response_json["data"][address]["value"]
+        let price_value = response_json
+            .get("data")
+            .and_then(|data| data.get(&address))
+            .and_then(|addr_obj| addr_obj.get("value"));
+
+        let price = match price_value {
+            Some(val) => {
+                // Accept either string or number values
+                if let Some(decimal_num) = val.as_f64() {
+                    decimal_num
+                } else if let Some(s) = val.as_str() {
+                    s.parse::<f64>().map_err(|e| TradingError::MarketDataUnavailable(format!(
+                        "Failed to parse price string to float for address {}: value = {}, err = {}", address, s, e
+                    )))?
+                } else {
+                    return Err(TradingError::MarketDataUnavailable(format!(
+                        "Price for address {} not a valid string or float: {:?}", address, val
+                    )));
+                }
+            }
+            None => {
+                return Err(TradingError::MarketDataUnavailable(format!(
+                    "No price found in response for address {}", address
+                )));
+            }
+        };
+
+        Ok(price)
     }
 
+    /// Calculates the base token amount from a given USDC amount and token price.
+    ///
+    /// This method converts a USDC-denominated position size into the equivalent
+    /// base token amount using the specified price. The result is a Decimal value.
+    ///
+    /// # Arguments
+    ///
+    /// * `amount_usdc` - The USDC amount to invest as a Decimal.
+    /// * `price` - The price per base token as a Decimal.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<f64, TradingError>` - The calculated base token amount or an error.
+    fn build_base_amount(&self, amount_usdc: f64, price: f64) -> Result<f64, TradingError> {
+        let base_amount = amount_usdc / price;
+        Ok(base_amount)
+    }
 
     /// Builds the payload for opening a position by calling the data service
     /// 
@@ -276,7 +386,7 @@ impl RangerClient {
         let url = format!("{}/increase_position", self.base_url_data);
 
         let evm_address = "0x90C7f18f99f931fa449A754252af56296Cb03ba1".to_string();
-        let fee_payer = "GxAvFAmwoHLthYCwyBDRXMpN8Q8sTjFXrsSt8ihbnvMz".to_string();
+        let fee_payer = self.wallet.get_solana_keypair()?.pubkey().to_string();
 
         let side_str = match side {
             PositionSide::Long => "Long",
@@ -285,12 +395,12 @@ impl RangerClient {
 
         let request = MarketOrderRequest {
             fee_payer: fee_payer.clone(),
-            symbol: "RENDER".to_string(),
+            symbol: symbol.to_uppercase(),
             side: side_str,
             adjustment_type: "Increase".to_string(),
             size: base_amount,
             collateral: amount_usdc,
-            size_denomination: "RENDER".to_string(),
+            size_denomination: symbol.to_uppercase(),
             collateral_denomination: "USDC".to_string(),
             evm_address: evm_address.clone(),
             ..Default::default()
@@ -399,8 +509,8 @@ impl RangerClient {
 
     /// Builds headers for trade execution requests
     /// 
-    /// These headers include the authentication token and are used
-    /// for actual trade execution requests to the trading API.
+    /// These headers include the authentication token and all required cookies,
+    /// which are used for actual trade execution requests to the trading API.
     /// 
     /// # Returns
     /// 
@@ -428,6 +538,7 @@ impl RangerClient {
         );
         headers.insert("user-agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36".parse().unwrap());
 
+        // Add Authorization header (Privy token)
         if let Some(token) = &self.auth_token {
             let auth_value = format!("Bearer {}", token);
             headers.insert(
@@ -439,6 +550,34 @@ impl RangerClient {
         } else {
             return Err(TradingError::AuthenticationFailed(format!("Auth Token is not set!")));
         }
+
+        // Build cookie string exactly as in the curl example
+        let mut cookies = Vec::new();
+        
+        // Add _ga cookie if available
+        cookies.push(format!("_ga={}", "GA1.2.1719891219.1"));
+        
+        // Add privy-session
+        cookies.push("privy-session=t".to_string());
+
+
+        // Add api access tokens
+        cookies.push(format!("serverless-api-access-token={}", API_ACCESS_TOKEN));
+        
+
+        // Add privy-token (same as auth token)
+        if let Some(token) = &self.auth_token {
+            cookies.push(format!("privy-token={}", token));
+        }
+        
+        // Join all cookies with "; "
+        let cookie_string = cookies.join("; ");
+        headers.insert(
+            "cookie",
+            cookie_string
+                .parse()
+                .map_err(|_| TradingError::AuthenticationFailed(format!("Can't parse cookies from string!")))?,
+        );
 
         Ok(headers)
     }

@@ -123,6 +123,10 @@ enum FfiCommand {
         seed: String,
         response: Sender<Result<(String, String), String>>,
     },
+    CreateAuthToken {
+        deadline: i64,
+        response: Sender<Result<String, String>>,
+    },
     SignCreateOrder {
         market_index: i32,
         client_order_index: i64,
@@ -248,6 +252,10 @@ impl FfiWorker {
                 let result = self.create_client_impl(&url, &private_key, chain_id, api_key_index, account_index);
                 let _ = response.send(result);
             }
+            FfiCommand::CreateAuthToken { deadline, response } => {
+                let result = self.create_auth_token_impl(deadline);
+                let _ = response.send(result);
+            }
             FfiCommand::GenerateApiKey { seed, response } => {
                 let result = self.generate_api_key_impl(&seed);
                 let _ = response.send(result);
@@ -327,6 +335,15 @@ impl FfiWorker {
             }
 
             Ok(())
+        }
+    }
+
+    fn create_auth_token_impl(&self, deadline: i64) -> Result<String, String> {
+        unsafe {
+            let create_auth_fn: Symbol<unsafe extern "C" fn(c_longlong) -> StrOrErr> =
+                self.library.get(b"CreateAuthToken").map_err(|e| e.to_string())?;
+            let result = create_auth_fn(deadline);
+            self.parse_result(result)
         }
     }
 
@@ -716,6 +733,46 @@ impl SignerClient {
                 chain_id: self.chain_id,
                 api_key_index,
                 account_index: self.account_index,
+                response: tx,
+            })
+            .map_err(|e| TradingError::SigningError(format!("Failed to send command: {}", e)))?;
+
+        rx.recv()
+            .map_err(|e| TradingError::SigningError(format!("Failed to receive response: {}", e)))?
+            .map_err(|e| TradingError::SigningError(e))
+    }
+
+    /// Creates an authentication token with an optional expiry.
+    /// 
+    /// # Arguments
+    /// * `deadline` - Deadline in seconds from now. If None, defaults to 10 minutes.
+    /// * `timestamp` - Optional timestamp. If None, uses current time.
+    pub fn create_auth_token_with_expiry(
+        &self,
+        deadline: Option<i64>,
+        timestamp: Option<i64>,
+    ) -> Result<String, TradingError> {
+        let deadline_seconds = deadline.unwrap_or(DEFAULT_10_MIN_AUTH_EXPIRY);
+        let actual_deadline = if deadline_seconds == DEFAULT_10_MIN_AUTH_EXPIRY {
+            10 * MINUTE
+        } else {
+            deadline_seconds
+        };
+
+        let now = timestamp.unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs() as i64
+        });
+
+        let expiry = now + actual_deadline;
+
+        let (tx, rx) = channel();
+
+        FFI_WORKER
+            .send(FfiCommand::CreateAuthToken {
+                deadline: expiry,
                 response: tx,
             })
             .map_err(|e| TradingError::SigningError(format!("Failed to send command: {}", e)))?;

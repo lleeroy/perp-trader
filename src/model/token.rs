@@ -1,4 +1,4 @@
-use crate::model::Exchange;
+use crate::{error::TradingError, model::Exchange};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Token {
@@ -20,7 +20,8 @@ pub enum SupportedToken {
     TON,
     EDEN,
     GMX,
-    GRASS
+    GRASS,
+    RENDER
 }
 
 impl std::fmt::Display for SupportedToken {
@@ -40,6 +41,7 @@ impl std::fmt::Display for SupportedToken {
             SupportedToken::EDEN => write!(f, "EDEN"),
             SupportedToken::GMX => write!(f, "GMX"),
             SupportedToken::GRASS => write!(f, "GRASS"),
+            SupportedToken::RENDER => write!(f, "RENDER"),
         }
     }
 }
@@ -62,6 +64,7 @@ impl Token {
                 61 => Self::gmx(),
                 62 => Self::dydx(),
                 89 => Self::eden(),
+                999 => Self::render(),
                 _ => panic!("Invalid market index: {}", market_index),
             },
         }
@@ -127,16 +130,33 @@ impl Token {
         Token::new(SupportedToken::GRASS)
     }
 
-    pub fn get_supported_tokens() -> Vec<Token> {
-        vec![
-            Self::zk(), 
-            Self::dydx(), 
-            Self::pengu(), 
-            Self::ton(), 
-            Self::eden(), 
-            Self::gmx(), 
-            Self::grass()
-        ]
+    pub fn render() -> Token {
+        Token::new(SupportedToken::RENDER)
+    }
+
+    pub fn get_supported_tokens(exchange: &Exchange) -> Vec<Token> {
+        match exchange {
+            Exchange::Lighter => vec![
+                Self::zk(), 
+                Self::dydx(), 
+                Self::pengu(), 
+                Self::ton(), 
+                Self::eden(), 
+                Self::gmx(), 
+                Self::grass()
+            ],
+            Exchange::Backpack => vec![],
+            Exchange::Ranger => vec![
+                Self::render()
+            ],
+        }
+    }
+
+    pub fn get_address(&self) -> Result<String, TradingError> {
+        match self.symbol {
+            SupportedToken::RENDER => Ok("rndrizKT3MK1iimdxRdWabcF7Zg7AR5T4nud4EkHBof".to_string()),
+            _ => return Err(TradingError::InvalidInput(format!("Address not found for token: {}", self.symbol))),
+        }
     }
 
     /// Returns the price denomination (how much to multiply the price by)
@@ -156,6 +176,7 @@ impl Token {
             SupportedToken::EDEN => 100_000.0,
             SupportedToken::GMX => 10_000.0,
             SupportedToken::GRASS => 100_000.0,
+            SupportedToken::RENDER => 100_000.0,
         }
     }
 
@@ -226,6 +247,11 @@ impl Token {
                 Exchange::Lighter => "GRASS".to_string(),
                 Exchange::Backpack => "GRASS_USDC_PERP".to_string(),
                 Exchange::Ranger => "GRASS".to_string(),
+            },
+            SupportedToken::RENDER => match exchange {
+                Exchange::Lighter => "RENDER".to_string(),
+                Exchange::Backpack => "RENDER_USDC_PERP".to_string(),
+                Exchange::Ranger => "RENDER".to_string(),
             },
         }
     }
@@ -301,6 +327,11 @@ impl Token {
                 Exchange::Lighter => 52,
                 Exchange::Backpack => 52,
                 Exchange::Ranger => 52,
+            },
+            SupportedToken::RENDER => match exchange {
+                Exchange::Lighter => 999,
+                Exchange::Backpack => 999,
+                Exchange::Ranger => 999,
             },
         }
     }
