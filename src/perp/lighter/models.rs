@@ -151,28 +151,56 @@ impl LighterOrder {
 
 
 impl LighterPosition {
-    #[allow(unused)]
+    /// Returns the percentage distance to liquidation for this position.
+    ///
+    /// This value indicates how close the position is to its liquidation price,
+    /// expressed as a percentage based on the current price (including unrealized PnL).
+    /// 
+    /// For long positions: ((current_price - liquidation_price) / current_price * 100)
+    /// For short positions: ((liquidation_price - current_price) / current_price * 100)
+    ///
+    /// The current price is calculated from: avg_entry_price + (unrealized_pnl / position_size)
+    ///
+    /// Returns zero if:
+    /// - Entry price or liquidation price is zero
+    /// - Position size is zero
+    /// - Liquidation price has already been crossed
     pub fn get_percentage_to_liquidation(&self) -> Decimal {
         let liq_price = self.liquidation_price;
         let entry_price = self.avg_entry_price;
+        let position_size = self.position.abs(); // Use absolute value
         
-        if entry_price == Decimal::ZERO || liq_price == Decimal::ZERO {
+        // Validate inputs
+        if entry_price == Decimal::ZERO || liq_price == Decimal::ZERO || position_size == Decimal::ZERO {
+            return Decimal::ZERO;
+        }
+        
+        // Calculate current price directly from position_value
+        let current_price = self.position_value / position_size;
+
+        // Sanity check: current price should be positive
+        if current_price <= Decimal::ZERO {
+            warn!("⚠️ Calculated current price is non-positive for position in {}: {}", self.symbol, current_price);
             return Decimal::ZERO;
         }
         
         match self.sign {
             1 => { // Long position
-                if entry_price <= liq_price {
-                    Decimal::ZERO
+                // Current price should be above liquidation price
+                if current_price <= liq_price {
+                    Decimal::ZERO // Already at or below liquidation
                 } else {
-                    (entry_price - liq_price) / entry_price * dec!(100)
+                    // Percentage from current price to liquidation
+                    (current_price - liq_price) / current_price * dec!(100)
                 }
             },
             -1 => { // Short position
-                if entry_price >= liq_price {
-                    Decimal::ZERO
+                // Current price should be below liquidation price
+                if current_price >= liq_price {
+                    Decimal::ZERO // Already at or above liquidation
                 } else {
-                    (liq_price - entry_price) / entry_price * dec!(100)
+                    // Percentage from current price to liquidation
+                    (liq_price - current_price) / current_price * dec!(100)
                 }
             },
             _ => Decimal::ZERO

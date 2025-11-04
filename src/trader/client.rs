@@ -20,12 +20,15 @@ use crate::{
 };
 
 use chrono::{DateTime, Duration, Utc};
-use rust_decimal::Decimal;
+use rust_decimal::{Decimal};
 use rand::{seq::SliceRandom, Rng};
+use rust_decimal_macros::dec;
 use sqlx::PgPool;
 use tokio::time::{sleep, Duration as TokioDuration};
 use colored::*;
 
+
+const MAX_ATTEMPTS: usize = 10;
 
 pub struct TraderClient {
     pub wallets: Vec<Wallet>,
@@ -120,11 +123,12 @@ impl TraderClient {
     }
 
     /// Monitor strategies and automatically close them when their close time is reached
+    /// or if any position is within 15% of liquidation
     /// 
     /// This method provides automated strategy lifecycle management by:
-    /// 1. Calculating the earliest close time across all strategies
-    /// 2. Waiting until the appropriate close times
-    /// 3. Closing positions for each strategy when its time arrives
+    /// 1. Continuously monitoring liquidation levels for ALL active strategies
+    /// 2. Closing strategies immediately if liquidation risk is detected in ANY strategy
+    /// 3. Closing strategies when their scheduled close time arrives
     /// 4. Handling failures with appropriate status updates and alerts
     /// 
     /// # Arguments
@@ -135,8 +139,9 @@ impl TraderClient {
     /// * `Err(TradingError)` - If input validation fails or critical errors occur
     /// 
     /// # Behavior
-    /// - Strategies are closed sequentially in the order provided
-    /// - Each strategy waits for its specific close time
+    /// - ALL strategies are monitored for liquidation continuously
+    /// - Liquidation checks are performed every 30 seconds across all strategies
+    /// - Strategies are closed at their scheduled times or immediately on liquidation risk
     /// - Failed closures are marked and alerted but don't stop other strategies
     /// - Local time display is adjusted to UTC+8 for user convenience
     pub async fn monitor_and_close_strategies(
@@ -147,13 +152,6 @@ impl TraderClient {
             return Err(TradingError::InvalidInput("No strategies provided".into()));
         }
 
-		// Find the earliest close time across all strategies
-		let earliest_close = strategies
-			.iter()
-			.map(|s| s.close_at)
-			.min()
-			.unwrap_or_else(Utc::now);
-
         // Display strategies being monitored
         info!("📋 Monitoring {} strategies:", strategies.len());
         for strategy in &strategies {
@@ -162,82 +160,210 @@ impl TraderClient {
                 strategy.id, strategy.token_symbol, strategy.wallet_ids, close_at_local.format("%H:%M"));
         }
 
-		// Wait until the earliest close time
-		{
-			let now = Utc::now();
-			if earliest_close > now {
-				let wait_duration = (earliest_close - now)
-					.to_std()
-					.unwrap_or(TokioDuration::from_secs(0));
+        // Track which strategies are still active
+        let mut active_strategies: Vec<StrategyMetadata> = strategies.clone();
+        
+        const CHECK_INTERVAL_SECS: u64 = 30;
+        const LIQUIDATION_THRESHOLD: Decimal = dec!(15.0);
 
-				info!(
-					"⏳ Waiting {} minutes until first strategy close time...",
-					wait_duration.as_secs() / 60 as u64
-				);
-
-				self.wait_until(earliest_close).await;
-			}
-		}
-
-        // Close each strategy
-        for strategy in strategies {
-			// Check if it's time to close this strategy
-			{
-				let now = Utc::now();
-				if strategy.close_at > now {
-					let remaining = (strategy.close_at - now)
-						.to_std()
-						.unwrap_or(TokioDuration::from_secs(0));
-					if remaining.as_secs() > 0 {
-						info!(
-							"⏳ Waiting {} seconds before closing strategy {}...",
-							remaining.as_secs(),
-							strategy.id
-						);
-						self.wait_until(strategy.close_at).await;
-					}
-				}
-			}
-
-            info!("🔄 Closing strategy {} ({})", strategy.id, strategy.token_symbol);
+        // Main monitoring loop - continues until all strategies are closed
+        while !active_strategies.is_empty() {
+            let now = Utc::now();
             
-            // Update strategy status to Closing
-			self
-				.set_strategy_status(&strategy.id, StrategyStatus::Closing, None, None)
-				.await?;
-
-            let mut has_failures = false;
-            match self.close_positions_on_lighter_for_wallets_group(&strategy.wallet_ids).await {
-                Ok(_) => {
-                    info!("✅ All positions closed successfully");
-                }
-                Err(e) => {
-                    error!("❌ Failed to close all positions: {}", e);
-                    has_failures = true;
-                    let strategy_clone = strategy.clone();
-
-                    tokio::spawn(async move {
-                        let alerter = TelegramAlerter::new();
-                        let error = TradingError::SigningError("Signing error".to_string());
-                        
-                        if let Err(e) = alerter.send_strategy_error_alert(&strategy_clone, &error).await {
-                            error!("{}", format!("❌ Failed to send strategy error alert: {}", e).on_red());
+            // Check liquidation levels for ALL active strategies in parallel
+            info!("🔍 Checking liquidation levels for {} active strategies...", active_strategies.len());
+            
+            let mut strategies_to_close = Vec::new();
+            
+            // Create futures for all liquidation checks
+            let check_futures = active_strategies.iter().map(|strategy| {
+                let strategy_clone = strategy.clone();
+                async move {
+                    // Check if it's time to close this strategy normally
+                    if Utc::now() >= strategy_clone.close_at {
+                        return (strategy_clone, Some((Decimal::ZERO, false, true))); // (percentage, is_emergency, is_scheduled)
+                    }
+                    
+                    // Check liquidation levels
+                    match self.check_strategy_liquidation_levels(&strategy_clone).await {
+                        Ok(Some(min_percentage)) => {
+                            (strategy_clone, Some((min_percentage, min_percentage < LIQUIDATION_THRESHOLD, false)))
                         }
-                    });
+                        Ok(None) => {
+                            (strategy_clone, None)
+                        }
+                        Err(e) => {
+                            warn!("⚠️ Failed to check liquidation for strategy {}: {}", strategy_clone.id, e);
+                            (strategy_clone, None)
+                        }
+                    }
+                }
+            });
+            
+            // Execute all checks in parallel
+            let check_results = futures::future::join_all(check_futures).await;
+            
+            // Process results
+            for (strategy, result) in check_results {
+                if let Some((min_percentage, is_emergency, is_scheduled)) = result {
+                    if is_scheduled {
+                        info!("⏰ Strategy {} has reached its scheduled close time", strategy.id);
+                        strategies_to_close.push((strategy, false)); // false = normal close
+                    } else if is_emergency {
+                        error!(
+                            "⚠️ {} Position in strategy {} is within {:.2}% of liquidation (threshold: {:.2}%)",
+                            "CRITICAL:".on_red().bold(),
+                            strategy.id,
+                            min_percentage,
+                            LIQUIDATION_THRESHOLD
+                        );
+                        strategies_to_close.push((strategy, true)); // true = emergency close
+                    } else if min_percentage < Decimal::from(20) {
+                        warn!(
+                            "⚠️ Strategy {} has positions within {:.2}% of liquidation",
+                            strategy.id, min_percentage
+                        );
+                    }
                 }
             }
+            
+            // Close strategies that need closing
+            for (strategy, is_emergency) in strategies_to_close {
+                if is_emergency {
+                    warn!("🚨 Initiating EMERGENCY close for strategy {} due to liquidation risk", strategy.id);
+                } else {
+                    info!("🔄 Closing strategy {} ({}) - scheduled time reached", strategy.id, strategy.token_symbol);
+                }
+                
+                // Update strategy status to Closing
+                self
+                    .set_strategy_status(&strategy.id, StrategyStatus::Closing, None, None)
+                    .await?;
 
-            // Update strategy status based on whether there were failures
-			let final_status = if has_failures { StrategyStatus::Failed } else { StrategyStatus::Closed };
+                let mut has_failures = false;
+                match self.close_positions_on_lighter_for_wallets_group(&strategy.wallet_ids).await {
+                    Ok(_) => {
+                        if is_emergency {
+                            info!("✅ Emergency close successful for strategy {}", strategy.id);
+                        } else {
+                            info!("✅ All positions closed successfully for strategy {}", strategy.id);
+                        }
+                    }
+                    Err(e) => {
+                        error!("❌ Failed to close positions for strategy {}: {}", strategy.id, e);
+                        has_failures = true;
+                        let strategy_clone = strategy.clone();
 
-			self
-				.set_strategy_status(&strategy.id, final_status, Some(Utc::now()), None)
-				.await?;
+                        tokio::spawn(async move {
+                            let alerter = TelegramAlerter::new();
+                            
+                            if let Err(e) = alerter.send_strategy_error_alert(&strategy_clone, &e).await {
+                                error!("{}", format!("❌ Failed to send strategy error alert: {}", e).on_red());
+                            }
+                        });
+                    }
+                }
 
-            info!("💰 Strategy {} completed | Status: {}", strategy.id, final_status);
+                // Update strategy status based on whether there were failures
+                let final_status = if has_failures { StrategyStatus::Failed } else { StrategyStatus::Closed };
+
+                self
+                    .set_strategy_status(&strategy.id, final_status, Some(Utc::now()), None)
+                    .await?;
+
+                if is_emergency {
+                    info!("💰 Strategy {} EMERGENCY closed | Status: {}", strategy.id, final_status);
+                } else {
+                    info!("💰 Strategy {} completed | Status: {}", strategy.id, final_status);
+                }
+                
+                // Remove from active strategies
+                active_strategies.retain(|s| s.id != strategy.id);
+            }
+            
+            // If there are still active strategies, sleep before next check
+            if !active_strategies.is_empty() {
+                // Calculate time until next scheduled close
+                let next_close = active_strategies
+                    .iter()
+                    .map(|s| s.close_at)
+                    .min()
+                    .unwrap_or_else(|| Utc::now() + Duration::seconds(CHECK_INTERVAL_SECS as i64));
+                
+                let time_until_next = (next_close - Utc::now())
+                    .to_std()
+                    .unwrap_or(TokioDuration::from_secs(CHECK_INTERVAL_SECS));
+                
+                // Sleep for the shorter of: time until next close or check interval
+                let sleep_duration = time_until_next.min(TokioDuration::from_secs(CHECK_INTERVAL_SECS));
+                
+                if sleep_duration.as_secs() > 0 {
+                    let remaining_strategies = active_strategies.len();
+                    let next_check_secs = sleep_duration.as_secs();
+                    info!(
+                        "⏳ {} active strategies remaining. Next check in {} seconds...",
+                        remaining_strategies,
+                        next_check_secs
+                    );
+                    sleep(sleep_duration).await;
+                }
+            }
+        }
+        
+        info!("🎊 All strategies have been closed!");
+        Ok(())
+    }
+
+    /// Check liquidation levels for all positions in a strategy
+    /// 
+    /// # Arguments
+    /// * `strategy` - Strategy metadata containing wallet IDs
+    /// 
+    /// # Returns
+    /// * `Ok(Some(Decimal))` - Minimum percentage to liquidation across all positions
+    /// * `Ok(None)` - No positions found or unable to check
+    /// * `Err(TradingError)` - Error checking positions
+    async fn check_strategy_liquidation_levels(
+        &self,
+        strategy: &StrategyMetadata,
+    ) -> Result<Option<Decimal>, TradingError> {
+        let mut min_percentage: Option<Decimal> = None;
+
+        for &wallet_id in &strategy.wallet_ids {
+            let client = match self.get_lighter_client(wallet_id) {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("⚠️ Could not get Lighter client for wallet {}: {}", wallet_id, e);
+                    continue;
+                }
+            };
+
+            let positions = match client.get_active_positions().await {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!("⚠️ Could not fetch positions for wallet {}: {}", wallet_id, e);
+                    continue;
+                }
+            };
+
+            for position in positions {
+                let percentage = position.get_percentage_to_liquidation();
+
+                if percentage == Decimal::ZERO {    
+                    continue;
+                }
+
+                match min_percentage {
+                    None => min_percentage = Some(percentage),
+                    Some(current_min) if percentage < current_min => {
+                        min_percentage = Some(percentage);
+                    }
+                    _ => {}
+                }
+            }
         }
 
-        Ok(())
+        Ok(min_percentage)
     }
 
     /// Execute a market-neutral farming strategy on Backpack exchange
@@ -602,7 +728,7 @@ impl TraderClient {
     pub async fn close_all_positions_on_lighter_for_all_wallets(&self) -> Result<(), TradingError> {
         use futures::future::try_join_all;
 
-        for attempt in 1..=5 {
+        for attempt in 1..=MAX_ATTEMPTS {
             info!("Attempt {} to close all positions on Lighter (all wallets)...", attempt);
 
             let close_futures = self.wallets.iter().map(|wallet| {
@@ -623,14 +749,14 @@ impl TraderClient {
                 }
                 Err(e) => {
                     error!("❌ Attempt {} failed to close all positions on Lighter: {}", attempt, e);
-                    if attempt < 5 {
+                    if attempt < MAX_ATTEMPTS {
                         info!("Retrying in 350ms...");
                         sleep(crate::Duration::from_millis(350)).await;
                     } else {
-                        error!("❌ Ultimately failed to close all positions on Lighter after 5 attempts");
+                        error!("❌ Ultimately failed to close all positions on Lighter after {} attempts", MAX_ATTEMPTS);
                         return Err(TradingError::ExchangeError(format!(
-                            "Failed to close all positions on Lighter after 5 attempts: {} | YOU NEED TO CLOSE THE POSITIONS MANUALLY!",
-                            e
+                            "Failed to close all positions on Lighter after {} attempts: {} | YOU NEED TO CLOSE THE POSITIONS MANUALLY!",
+                            MAX_ATTEMPTS, e
                         )));
                     }
                 }
@@ -654,7 +780,7 @@ impl TraderClient {
     async fn close_positions_on_lighter_for_wallets_group(&self, wallet_ids: &[u8]) -> Result<(), TradingError> {
         use futures::future::try_join_all;
 
-        for attempt in 1..=5 {
+        for attempt in 1..=MAX_ATTEMPTS {
             info!(
                 "Attempt {} to close positions on Lighter for wallet group {:?}...",
                 attempt, wallet_ids
@@ -681,17 +807,18 @@ impl TraderClient {
                         "❌ Attempt {} failed to close positions for wallet group {:?}: {}",
                         attempt, wallet_ids, e
                     );
-                    if attempt < 5 {
+
+                    if attempt < MAX_ATTEMPTS {
                         info!("Retrying in 350ms...");
                         sleep(crate::Duration::from_millis(350)).await;
                     } else {
                         error!(
-                            "❌ Ultimately failed to close positions for wallet group {:?} after 5 attempts",
-                            wallet_ids
+                            "❌ Ultimately failed to close positions for wallet group {:?} after {} attempts",
+                            wallet_ids, MAX_ATTEMPTS
                         );
                         return Err(TradingError::ExchangeError(format!(
-                            "Failed to close positions for wallet group {:?} after 5 attempts: {} | YOU NEED TO CLOSE THE POSITIONS MANUALLY!",
-                            wallet_ids, e
+                            "Failed to close positions for wallet group {:?} after {} attempts: {} | YOU NEED TO CLOSE THE POSITIONS MANUALLY!",
+                            wallet_ids, MAX_ATTEMPTS, e
                         )));
                     }
                 }
@@ -712,7 +839,7 @@ impl TraderClient {
     /// * `Ok(())` - All positions closed successfully for the wallet
     /// * `Err(TradingError)` - If the close operation fails after all attempts
     async fn close_positions_on_lighter_for_wallet(&self, wallet_id: u8) -> Result<(), TradingError> {
-        for attempt in 1..=5 {
+        for attempt in 1..=MAX_ATTEMPTS {
             info!("Attempt {} to close positions on Lighter for wallet {}...", attempt, wallet_id);
             let client_result = self.get_lighter_client(wallet_id);
             let client = match client_result {
@@ -731,14 +858,14 @@ impl TraderClient {
                 }
                 Err(e) => {
                     error!("❌ Attempt {} failed to close positions for wallet {}: {}", attempt, wallet_id, e);
-                    if attempt < 5 {
+                    if attempt < MAX_ATTEMPTS {
                         info!("Retrying in 350ms...");
                         sleep(crate::Duration::from_millis(350)).await;
                     } else {
-                        error!("❌ Ultimately failed to close positions for wallet {} after 5 attempts", wallet_id);
+                        error!("❌ Ultimately failed to close positions for wallet {} after {} attempts", wallet_id, MAX_ATTEMPTS);
                         return Err(TradingError::ExchangeError(format!(
-                            "Failed to close positions for wallet {} after 5 attempts: {} | YOU NEED TO CLOSE THE POSITIONS MANUALLY!",
-                            wallet_id, e
+                            "Failed to close positions for wallet {} after {} attempts: {} | YOU NEED TO CLOSE THE POSITIONS MANUALLY!",
+                            wallet_id, MAX_ATTEMPTS, e
                         )));
                     }
                 }

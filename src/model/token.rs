@@ -137,7 +137,7 @@ impl Token {
     pub fn get_supported_tokens(exchange: &Exchange) -> Vec<Token> {
         match exchange {
             Exchange::Lighter => vec![
-                Self::zk(), 
+                // Self::zk(), 
                 Self::dydx(), 
                 Self::pengu(), 
                 Self::ton(), 

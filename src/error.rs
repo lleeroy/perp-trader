@@ -75,3 +75,4 @@ pub enum TradingError {
     #[error("Signing error: {0}")]
     SigningError(String),
 }
+

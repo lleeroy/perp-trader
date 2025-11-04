@@ -4,6 +4,7 @@ use crate::error::TradingError;
 use crate::trader::strategy::{StrategyStatus, TradingStrategy};
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
+use rust_decimal::prelude::FromPrimitive;
 use sqlx::{PgPool, Row};
 use std::str::FromStr;
 
@@ -344,7 +345,235 @@ impl StrategyMetadata {
             .cloned()
             .collect()
     }
+
+    /// Check the current status of the strategy and determine if any action is needed
+    /// Returns a tuple of (current_status, needs_action, action_reason)
+    pub fn check_strategy_status(&self, current_time: DateTime<Utc>) -> (StrategyStatus, bool, Option<String>) {
+        match self.status {
+            StrategyStatus::Running => {
+                // Check if strategy should be closed due to time
+                if current_time >= self.close_at {
+                    return (
+                        StrategyStatus::Running,
+                        true,
+                        Some(format!("Strategy reached close time: {}", self.close_at))
+                    );
+                }
+                
+                // Check if strategy has been open for too long (safety check)
+                let max_duration = chrono::Duration::hours(24); // 24 hours max
+                if current_time - self.opened_at > max_duration {
+                    return (
+                        StrategyStatus::Running,
+                        true,
+                        Some("Strategy exceeded maximum duration (24 hours)".to_string())
+                    );
+                }
+                
+                // Strategy is running normally
+                (StrategyStatus::Running, false, None)
+            }
+            
+            StrategyStatus::Closing => {
+                // If strategy is already closing, check if it's taking too long
+                let closing_timeout = chrono::Duration::minutes(10); // 10 minutes max for closing
+                if let Some(started_closing_at) = self.updated_at.checked_add_signed(closing_timeout) {
+                    if current_time > started_closing_at {
+                        return (
+                            StrategyStatus::Closing,
+                            true,
+                            Some("Strategy closing is taking too long".to_string())
+                        );
+                    }
+                }
+                
+                (StrategyStatus::Closing, false, None)
+            }
+            
+            StrategyStatus::Closed | StrategyStatus::Failed => {
+                // No action needed for completed strategies
+                (self.status, false, None)
+            }
+        }
+    }
+
+    /// Check if the strategy is currently active (running or closing)
+    pub fn is_active(&self) -> bool {
+        matches!(self.status, StrategyStatus::Running | StrategyStatus::Closing)
+    }
+
+    /// Check if the strategy is completed (closed or failed)
+    pub fn is_completed(&self) -> bool {
+        matches!(self.status, StrategyStatus::Closed | StrategyStatus::Failed)
+    }
+
+    /// Check if the strategy should be force-closed due to emergency conditions
+    pub fn should_force_close(&self, current_time: DateTime<Utc>) -> bool {
+        // Force close if strategy has been in closing state for too long
+        if self.status == StrategyStatus::Closing {
+            let closing_timeout = chrono::Duration::minutes(15); // 15 minutes max
+            if let Some(max_closing_time) = self.updated_at.checked_add_signed(closing_timeout) {
+                return current_time > max_closing_time;
+            }
+        }
+        
+        false
+    }
+
+    /// Get time until strategy close
+    pub fn time_until_close(&self, current_time: DateTime<Utc>) -> Option<chrono::Duration> {
+        if current_time < self.close_at {
+            Some(self.close_at - current_time)
+        } else {
+            None
+        }
+    }
+
+    /// Format time until close as human-readable string
+    pub fn format_time_until_close(&self, current_time: DateTime<Utc>) -> String {
+        match self.time_until_close(current_time) {
+            Some(duration) => {
+                let total_seconds = duration.num_seconds();
+                let hours = total_seconds / 3600;
+                let minutes = (total_seconds % 3600) / 60;
+                let seconds = total_seconds % 60;
+                
+                if hours > 0 {
+                    format!("{}h {}m {}s", hours, minutes, seconds)
+                } else if minutes > 0 {
+                    format!("{}m {}s", minutes, seconds)
+                } else {
+                    format!("{}s", seconds)
+                }
+            }
+            None => "CLOSED".to_string()
+        }
+    }
+
+    /// Get the total position size (longs + shorts)
+    pub fn total_position_size(&self) -> Decimal {
+        self.longs_size + self.shorts_size
+    }
+
+    /// Get the net position size (longs - shorts)
+    pub fn net_position_size(&self) -> Decimal {
+        self.longs_size - self.shorts_size
+    }
+
+    /// Check if the strategy is market neutral (longs ≈ shorts)
+    pub fn is_market_neutral(&self, tolerance: Option<Decimal>) -> bool {
+        let tolerance = tolerance.unwrap_or(Decimal::from_f64(0.05).unwrap()); // 5% tolerance by default
+        let net_size = self.net_position_size().abs();
+        let total_size = self.total_position_size();
+        
+        if total_size.is_zero() {
+            true
+        } else {
+            net_size / total_size <= tolerance
+        }
+    }
+
+    /// Get strategy duration so far
+    pub fn duration_so_far(&self, current_time: DateTime<Utc>) -> chrono::Duration {
+        current_time - self.opened_at
+    }
+
+    /// Check if strategy has been open longer than specified duration
+    pub fn has_exceeded_duration(&self, max_duration: chrono::Duration, current_time: DateTime<Utc>) -> bool {
+        self.duration_so_far(current_time) > max_duration
+    }
+
+    /// Get strategy age in minutes
+    pub fn age_minutes(&self, current_time: DateTime<Utc>) -> i64 {
+        self.duration_so_far(current_time).num_minutes()
+    }
+
+    /// Get strategy age in hours
+    pub fn age_hours(&self, current_time: DateTime<Utc>) -> i64 {
+        self.duration_so_far(current_time).num_hours()
+    }
+
+    /// Check if strategy has realized PnL
+    pub fn has_realized_pnl(&self) -> bool {
+        self.realized_pnl.is_some()
+    }
+
+    /// Get realized PnL or zero if none
+    pub fn realized_pnl_or_zero(&self) -> Decimal {
+        self.realized_pnl.unwrap_or(Decimal::ZERO)
+    }
+
+    /// Check if strategy was profitable
+    pub fn was_profitable(&self) -> Option<bool> {
+        self.realized_pnl.map(|pnl| pnl > Decimal::ZERO)
+    }
+
+    /// Get the number of wallets in this strategy
+    pub fn wallet_count(&self) -> usize {
+        self.wallet_ids.len()
+    }
+
+    /// Get the number of long positions
+    pub fn long_position_count(&self) -> usize {
+        self.long_position_ids.len()
+    }
+
+    /// Get the number of short positions
+    pub fn short_position_count(&self) -> usize {
+        self.short_position_ids.len()
+    }
+
+    /// Get total number of positions
+    pub fn total_position_count(&self) -> usize {
+        self.long_position_count() + self.short_position_count()
+    }
+
+    /// Check if strategy has any positions
+    pub fn has_positions(&self) -> bool {
+        !self.long_position_ids.is_empty() || !self.short_position_ids.is_empty()
+    }
+
+    /// Check if strategy has both long and short positions
+    pub fn has_both_sides(&self) -> bool {
+        !self.long_position_ids.is_empty() && !self.short_position_ids.is_empty()
+    }
+
+    /// Get strategy efficiency ratio (min(longs, shorts) / max(longs, shorts))
+    /// Higher values indicate better balance between long and short sides
+    pub fn efficiency_ratio(&self) -> Decimal {
+        if self.longs_size.is_zero() && self.shorts_size.is_zero() {
+            return Decimal::ONE;
+        }
+        
+        let min_size = self.longs_size.min(self.shorts_size);
+        let max_size = self.longs_size.max(self.shorts_size);
+        
+        min_size / max_size
+    }
+
+    /// Create a simple string representation for logging
+    pub fn to_log_string(&self, current_time: DateTime<Utc>) -> String {
+        let time_until_close = self.format_time_until_close(current_time);
+        let age_minutes = self.age_minutes(current_time);
+        let efficiency = self.efficiency_ratio();
+        
+        format!(
+            "{} [{}] | Token: {} | Wallets: {} | Positions: {}L/{}S | Size: {:.2}/{:.2} | Close in: {} | Age: {}min | Eff: {:.1}%",
+            self.id,
+            self.status,
+            self.token_symbol,
+            self.wallet_count(),
+            self.long_position_count(),
+            self.short_position_count(),
+            self.longs_size,
+            self.shorts_size,
+            time_until_close,
+            age_minutes,
+            efficiency * Decimal::from(100)
+        )
+    }
 }
+
 
 /// Parse comma-separated position IDs
 fn parse_position_ids(ids_str: &str) -> Vec<String> {
