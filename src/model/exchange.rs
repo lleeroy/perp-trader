@@ -5,7 +5,6 @@ use std::str::FromStr;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Exchange {
-    Backpack,
     Lighter,
     Ranger
 }
@@ -13,7 +12,6 @@ pub enum Exchange {
 impl fmt::Display for Exchange {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Exchange::Backpack => write!(f, "Backpack"),
             Exchange::Lighter => write!(f, "Lighter"),
             Exchange::Ranger => write!(f, "Ranger"),
         }
@@ -25,7 +23,6 @@ impl FromStr for Exchange {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
-            "backpack" => Ok(Exchange::Backpack),
             "lighter" => Ok(Exchange::Lighter),
             "ranger" => Ok(Exchange::Ranger),
             _ => Err(anyhow::anyhow!("Unknown exchange: {}", s)),

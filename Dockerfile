@@ -1,5 +1,11 @@
-FROM lukemathwalker/cargo-chef:latest-rust-1 AS chef
+FROM rust:bookworm AS chef
 WORKDIR /app
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+RUN cargo install cargo-chef
+RUN rustup default nightly
 
 FROM chef AS planner
 COPY . .
@@ -15,12 +21,13 @@ RUN cargo build --release --bin perp-trader
 
 
 # We do not need the Rust toolchain to run the binary!
-FROM debian:trixie-slim AS runtime
+FROM debian:bookworm-slim AS runtime
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y \
-    libssl3 \
     ca-certificates \
+    libssl3 \
+    openssl \
     && rm -rf /var/lib/apt/lists/*
 
 RUN update-ca-certificates
@@ -28,6 +35,8 @@ RUN update-ca-certificates
 COPY --from=builder /app/target/release/perp-trader /usr/local/bin
 COPY config.toml /app/config.toml
 COPY api-keys.json /app/api-keys.json
+COPY proxies.json /app/proxies.json
+
 COPY bin/signers/signer-amd64.so /app/bin/signers/signer-amd64.so
 
 ENTRYPOINT ["/usr/local/bin/perp-trader"]

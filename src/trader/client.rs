@@ -13,7 +13,7 @@ use crate::{
     alert::telegram::TelegramAlerter, error::TradingError, model::{
 		position::{Position, PositionSide, PositionStatus},
 		token::Token, Exchange,
-	}, perp::{backpack::BackpackClient, lighter::client::LighterClient, PerpExchange}, storage::{
+	}, perp::{lighter::client::LighterClient, PerpExchange}, storage::{
 		storage_position::PositionStorage,
 		storage_strategy::{StrategyMetadata, StrategyStorage},
 	}, trader::{strategy::{StrategyStatus, TradingStrategy}, wallet::{Wallet, WalletTradingClient}}
@@ -53,7 +53,6 @@ impl TraderClient {
     /// * `TradingError::WalletError` - If wallet configuration files cannot be loaded
     /// * `TradingError::StorageError` - If database connections cannot be established
     pub async fn new(wallet_ids: Vec<u8>, pool: PgPool) -> Result<Self, TradingError> {
-
         if wallet_ids.is_empty() {
             return Err(TradingError::InvalidInput("No wallet IDs provided".into()));
         }
@@ -62,9 +61,15 @@ impl TraderClient {
             return Err(TradingError::InvalidInput("At least 3 wallets are required".into()));
         }
 
-        let wallets = wallet_ids.iter()
-            .map(|id| Wallet::load_from_json(*id))
-            .collect::<Result<Vec<Wallet>, TradingError>>()?;
+        // Load wallets concurrently
+        let wallets_result = futures::future::try_join_all(
+            wallet_ids.iter().map(|id| Wallet::load_from_json(*id))
+        ).await;
+
+        let wallets = match wallets_result {
+            Ok(ws) => ws,
+            Err(e) => return Err(e),
+        };
 
         let position_storage = PositionStorage::new(pool.clone()).await?;
         let strategy_storage = StrategyStorage::new(pool).await?;
@@ -163,16 +168,11 @@ impl TraderClient {
         // Track which strategies are still active
         let mut active_strategies: Vec<StrategyMetadata> = strategies.clone();
         
-        const CHECK_INTERVAL_SECS: u64 = 30;
+        const CHECK_INTERVAL_SECS: u64 = 15;
         const LIQUIDATION_THRESHOLD: Decimal = dec!(15.0);
 
         // Main monitoring loop - continues until all strategies are closed
-        while !active_strategies.is_empty() {
-            let now = Utc::now();
-            
-            // Check liquidation levels for ALL active strategies in parallel
-            info!("🔍 Checking liquidation levels for {} active strategies...", active_strategies.len());
-            
+        while !active_strategies.is_empty() {            
             let mut strategies_to_close = Vec::new();
             
             // Create futures for all liquidation checks
@@ -298,13 +298,6 @@ impl TraderClient {
                 let sleep_duration = time_until_next.min(TokioDuration::from_secs(CHECK_INTERVAL_SECS));
                 
                 if sleep_duration.as_secs() > 0 {
-                    let remaining_strategies = active_strategies.len();
-                    let next_check_secs = sleep_duration.as_secs();
-                    info!(
-                        "⏳ {} active strategies remaining. Next check in {} seconds...",
-                        remaining_strategies,
-                        next_check_secs
-                    );
                     sleep(sleep_duration).await;
                 }
             }
@@ -366,137 +359,6 @@ impl TraderClient {
         Ok(min_percentage)
     }
 
-    /// Execute a market-neutral farming strategy on Backpack exchange
-    /// 
-    /// This method implements a sophisticated trading strategy designed for
-    /// points farming while minimizing market exposure through balanced
-    /// long/short positions across multiple wallets.
-    /// 
-    /// # Strategy Overview
-    /// 1. **Conflict Resolution**: Checks for active strategies and waits if needed
-    /// 2. **Balance Checking**: Verifies sufficient USDC balance in all wallets
-    /// 3. **Token Selection**: Randomly selects a trading token from supported list
-    /// 4. **Position Allocation**: Creates balanced long/short allocations across wallets
-    /// 5. **Parallel Execution**: Opens all positions concurrently for efficiency
-    /// 6. **Strategy Tracking**: Creates and persists strategy metadata for monitoring
-    /// 
-    /// # Returns
-    /// * `Ok(TradingStrategy)` - Complete strategy with all opened positions
-    /// * `Err(TradingError)` - If any step fails or insufficient balances
-    /// 
-    /// # Market Neutral Approach
-    /// The strategy aims for market neutrality by balancing long and short positions
-    /// across the wallet pool, reducing overall market exposure while maximizing
-    /// points farming potential.
-    pub async fn farm_points_on_backpack_from_multiple_wallets(
-        &self,
-    ) -> Result<TradingStrategy, TradingError> {
-        info!("🎯 Starting Backpack farming strategy with {} wallets", self.wallets.len());
-        let mut rng = rand::thread_rng();
-        let duration_minutes = rng.gen_range(1..=3);
-        info!("⏱️  Strategy duration: {} minutes", duration_minutes);
-
-        // Handle conflicting strategies across our wallets (retry-after-close behavior)
-        self.handle_conflicting_strategies().await?;
-        info!("✅ No active strategies found for these wallets.");
-
-		// Step 1: Fetch USDC balances from all wallets
-		let wallet_balances = self.fetch_wallet_balances_on_backpack().await?;
-		for (id, balance) in &wallet_balances {
-			info!("💰 Wallet #{}: {:.2} USDC", id, balance);
-		}
-
-        // Step 2: Generate balanced long/short allocations
-        let allocations = TradingStrategy::generate_balanced_allocations(&wallet_balances)?;
-
-		// Step 3: Randomly select a token to trade
-		let selected_token = self.select_random_token(&Exchange::Backpack)?;
-        info!("🎲 Selected token: {:?}", selected_token.symbol);
-
-        // Step 4: Open positions for each allocation (in parallel)
-        let close_at = Utc::now() + Duration::minutes(duration_minutes);
-        info!("⏱️  Strategy duration: {} minutes", duration_minutes);
-        
-        // Create futures for all position openings
-        let mut position_futures = Vec::new();
-        
-        for allocation in allocations {
-            let token = selected_token.clone();
-            let side = allocation.side;
-            let usdc_amount = allocation.usdc_amount;
-            
-            // Create a future for opening this position
-            let future = async move {
-                let backpack_client = BackpackClient::new(self.find_wallet(allocation.wallet_id)?);
-                
-                let position = backpack_client
-                    .open_position(
-                        token,
-                        side,
-                        close_at,
-                        usdc_amount,
-                    )
-                    .await?;
-                Ok::<(Position, PositionSide), TradingError>((position, side))
-            };
-            
-            position_futures.push(future);
-        }
-        
-        // Execute all position openings in parallel
-        info!("🚀 Opening {} positions in parallel...", position_futures.len());
-        let results = futures::future::join_all(position_futures).await;
-        
-        // Separate results into longs and shorts
-        let mut long_positions = Vec::new();
-        let mut short_positions = Vec::new();
-        
-        for result in results {
-            let (position, side) = result?;
-            match side {
-                crate::model::PositionSide::Long => long_positions.push(position),
-                crate::model::PositionSide::Short => short_positions.push(position),
-            }
-        }
-        
-        info!("✅ All positions opened successfully!");
-
-        // Step 5: Build the trading strategy
-        let mut strategy = TradingStrategy::build_from_positions(
-            selected_token.get_symbol_string(Exchange::Backpack),
-            long_positions, 
-            short_positions
-        )?;
-        
-        // Step 6: Link positions to strategy and save everything
-        let strategy_id = strategy.id.clone();
-        
-        // Update all positions with the strategy_id
-        for position in strategy.longs.iter_mut().chain(strategy.shorts.iter_mut()) {
-            position.strategy_id = Some(strategy_id.clone());
-        }
-        
-        // Save strategy first
-        self.strategy_storage.save_strategy(&strategy).await?;
-        
-        info!("✅ Strategy {} executed successfully!", strategy_id);
-        info!("   Token: {}", strategy.token_symbol);
-        info!("   Long positions: {} | Total size: {}", strategy.longs.len(), strategy.longs_size);
-        info!("   Short positions: {} | Total size: {}", strategy.shorts.len(), strategy.shorts_size);
-
-        let close_at_local = strategy.close_at + chrono::Duration::hours(8);
-        let now_local = Utc::now() + chrono::Duration::hours(8);
-        let minutes_from_now = ((close_at_local - now_local).num_minutes()).max(0);
-
-        info!(
-            "   Close at: {} ({}), in {} minutes",
-            close_at_local.format("%a %H:%M"),
-            close_at_local.format("%Y-%m-%d"),
-            minutes_from_now
-        );
-        
-        Ok(strategy)
-    }
 
     /// Execute a market-neutral farming strategy on Lighter exchange with wallet grouping
     /// 
@@ -947,25 +809,6 @@ impl TraderClient {
     }
 
 
-    // ===== Internal Helper Methods =====
-
-    /// Wait asynchronously until the specified deadline
-    /// 
-    /// # Arguments
-    /// * `deadline` - DateTime to wait until
-	async fn wait_until(&self, deadline: DateTime<Utc>) {
-		let now = Utc::now();
-		if deadline > now {
-			let wait = (deadline - now)
-				.to_std()
-				.unwrap_or(TokioDuration::from_secs(0));
-            
-			if wait.as_secs() > 0 {
-				sleep(wait).await;
-			}
-		}
-	}
-
     /// Find a wallet by ID from the loaded wallets
     /// 
     /// # Arguments
@@ -1032,48 +875,6 @@ impl TraderClient {
             .clone())
     }
 
-
-    /// Get a Backpack client for a specific wallet
-    /// 
-    /// # Arguments
-    /// * `wallet_id` - Wallet identifier
-    /// 
-    /// # Returns
-    /// * `Ok(BackpackClient)` - Configured client for the wallet
-    /// * `Err(TradingError)` - If wallet client not found
-    // fn get_backpack_client(&self, wallet_id: u8) -> Result<BackpackClient, TradingError> {
-    //     Ok(self.wallet_trading_clients
-    //         .iter().find(|w| w.wallet.id == wallet_id)
-    //         .ok_or_else(|| TradingError::InvalidInput(format!("Backpack client for wallet #{} not found", wallet_id)))?
-    //         .backpack_client
-    //         .clone())
-    // }
-
-
-
-    /// Fetch USDC balances for all wallets from Backpack exchange
-    /// 
-    /// # Returns
-    /// * `Ok(Vec<(u8, Decimal)>)` - Vector of (wallet_id, balance) pairs
-    /// * `Err(TradingError)` - If any wallet has insufficient balance or API fails
-	pub async fn fetch_wallet_balances_on_backpack(&self) -> Result<Vec<(u8, Decimal)>, TradingError> {
-		let mut balances = Vec::with_capacity(self.wallets.len());
-
-		for wallet in &self.wallets {
-			let client = BackpackClient::new(&wallet);
-			let balance = client.get_usdc_balance().await?;
-
-			if balance <= Decimal::ZERO {
-				return Err(TradingError::InvalidInput(format!(
-					"Wallet #{} has insufficient USDC balance: {}",
-					wallet.id, balance
-				)));
-			}
-
-			balances.push((wallet.id, balance));
-		}
-		Ok(balances)
-	}
 
 
     /// Fetch USDC balances for all wallets from Lighter exchange in parallel

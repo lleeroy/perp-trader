@@ -1,5 +1,6 @@
 pub mod storage_position;
 pub mod storage_strategy;
+pub mod database;
 
 use crate::error::TradingError;
 use anyhow::Context;

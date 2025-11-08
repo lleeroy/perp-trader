@@ -49,7 +49,7 @@ impl std::fmt::Display for SupportedToken {
 impl Token {
     pub fn from_market_index(exchange: Exchange, market_index: i32) -> Self {
         match exchange {
-            Exchange::Lighter | Exchange::Backpack | Exchange::Ranger => match market_index {
+            Exchange::Lighter | Exchange::Ranger => match market_index {
                 0 => Self::eth(),
                 2 => Self::sol(),
                 7 => Self::xrp(),
@@ -137,15 +137,12 @@ impl Token {
     pub fn get_supported_tokens(exchange: &Exchange) -> Vec<Token> {
         match exchange {
             Exchange::Lighter => vec![
-                // Self::zk(), 
                 Self::dydx(), 
-                Self::pengu(), 
                 Self::ton(), 
                 Self::eden(), 
                 Self::gmx(), 
                 Self::grass()
             ],
-            Exchange::Backpack => vec![],
             Exchange::Ranger => vec![
                 Self::render()
             ],
@@ -184,73 +181,59 @@ impl Token {
         match self.symbol {
             SupportedToken::ETH => match exchange {
                 Exchange::Lighter => "ETH".to_string(),
-                Exchange::Backpack => "ETH_USDC_PERP".to_string(),
                 Exchange::Ranger => "ETH".to_string(),
             },
             SupportedToken::SOL => match exchange {
                 Exchange::Lighter => "SOL".to_string(),
-                Exchange::Backpack => "SOL_USDC_PERP".to_string(),
                 Exchange::Ranger => "SOL".to_string(),
             },
             SupportedToken::HYPE => "HYPE_USDC_PERP".to_string(),
             SupportedToken::BNB => match exchange {
                 Exchange::Lighter => "BNB".to_string(),
-                Exchange::Backpack => "BNB_USDC_PERP".to_string(),
                 Exchange::Ranger => "BNB".to_string(),
             },
             SupportedToken::XRP => match exchange {
                 Exchange::Lighter => "XRP".to_string(),
-                Exchange::Backpack => "XRP_USDC_PERP".to_string(),
                 Exchange::Ranger => "XRP".to_string(),
             },
             SupportedToken::AAVE => match exchange {
                 Exchange::Lighter => "AAVE".to_string(),
-                Exchange::Backpack => "AAVE_USDC_PERP".to_string(),
                 Exchange::Ranger => "AAVE".to_string(),
             },
             SupportedToken::ENA => match exchange {
                 Exchange::Lighter => "ENA".to_string(),
-                Exchange::Backpack => "ENA_USDC_PERP".to_string(),
                 Exchange::Ranger => "ENA".to_string(),
             },
             SupportedToken::ZK => match exchange {
                 Exchange::Lighter => "ZK".to_string(),
-                Exchange::Backpack => "ZK_USDC_PERP".to_string(),
                 Exchange::Ranger => "ZK".to_string(),
             },
             SupportedToken::DYDX => match exchange {
                 Exchange::Lighter => "DYDX".to_string(),
-                Exchange::Backpack => "DYDX_USDC_PERP".to_string(),
                 Exchange::Ranger => "DYDX".to_string(),
             },
             SupportedToken::PENGU => match exchange {
                 Exchange::Lighter => "PENGU".to_string(),
-                Exchange::Backpack => "PENGU_USDC_PERP".to_string(),
                 Exchange::Ranger => "PENGU".to_string(),
             },
             SupportedToken::TON => match exchange {
                 Exchange::Lighter => "TON".to_string(),
-                Exchange::Backpack => "TON_USDC_PERP".to_string(),
                 Exchange::Ranger => "TON".to_string(),
             },
             SupportedToken::EDEN => match exchange {
                 Exchange::Lighter => "EDEN".to_string(),
-                Exchange::Backpack => "EDEN_USDC_PERP".to_string(),
                 Exchange::Ranger => "EDEN".to_string(),
             },
             SupportedToken::GMX => match exchange {
                 Exchange::Lighter => "GMX".to_string(),
-                Exchange::Backpack => "GMX_USDC_PERP".to_string(),
                 Exchange::Ranger => "GMX".to_string(),
             },
             SupportedToken::GRASS => match exchange {
                 Exchange::Lighter => "GRASS".to_string(),
-                Exchange::Backpack => "GRASS_USDC_PERP".to_string(),
                 Exchange::Ranger => "GRASS".to_string(),
             },
             SupportedToken::RENDER => match exchange {
                 Exchange::Lighter => "RENDER".to_string(),
-                Exchange::Backpack => "RENDER_USDC_PERP".to_string(),
                 Exchange::Ranger => "RENDER".to_string(),
             },
         }
@@ -260,77 +243,62 @@ impl Token {
         match self.symbol {
             SupportedToken::ETH => match exchange {
                 Exchange::Lighter => 0,
-                Exchange::Backpack => 0,
                 Exchange::Ranger => 0,
             },
             SupportedToken::SOL => match exchange {
                 Exchange::Lighter => 2,
-                Exchange::Backpack => 2,
                 Exchange::Ranger => 2,
             },
             SupportedToken::XRP => match exchange {
                 Exchange::Lighter => 7,
-                Exchange::Backpack => 7,
                 Exchange::Ranger => 7,
             },
             SupportedToken::TON => match exchange {
                 Exchange::Lighter => 12,
-                Exchange::Backpack => 12,
                 Exchange::Ranger => 12,
             },
             SupportedToken::HYPE => match exchange {
                 Exchange::Lighter => 24,
-                Exchange::Backpack => 24,
                 Exchange::Ranger => 24,
             },
             SupportedToken::BNB => match exchange {
                 Exchange::Lighter => 25,
-                Exchange::Backpack => 25,
                 Exchange::Ranger => 25,
             },
             SupportedToken::AAVE => match exchange {
                 Exchange::Lighter => 27,
-                Exchange::Backpack => 27,
                 Exchange::Ranger => 27,
             },
             SupportedToken::ENA => match exchange {
                 Exchange::Lighter => 29,
-                Exchange::Backpack => 29,
                 Exchange::Ranger => 29,
             },
             SupportedToken::ZK => match exchange {
                 Exchange::Lighter => 56,
-                Exchange::Backpack => 56,
                 Exchange::Ranger => 56,
             },
             SupportedToken::DYDX => match exchange {
                 Exchange::Lighter => 62,
-                Exchange::Backpack => 62,
                 Exchange::Ranger => 62,
             },
             SupportedToken::PENGU => match exchange {
                 Exchange::Lighter => 47,
-                Exchange::Backpack => 47,
                 Exchange::Ranger => 47,
             },
             SupportedToken::EDEN => match exchange {
                 Exchange::Lighter => 89,
-                Exchange::Backpack => 89,
                 Exchange::Ranger => 89,
             },
             SupportedToken::GMX => match exchange {
                 Exchange::Lighter => 61,
-                Exchange::Backpack => 61,
                 Exchange::Ranger => 61,
             },
             SupportedToken::GRASS => match exchange {
                 Exchange::Lighter => 52,
-                Exchange::Backpack => 52,
                 Exchange::Ranger => 52,
             },
             SupportedToken::RENDER => match exchange {
                 Exchange::Lighter => 999,
-                Exchange::Backpack => 999,
                 Exchange::Ranger => 999,
             },
         }
