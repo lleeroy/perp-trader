@@ -338,6 +338,10 @@ async fn main() -> Result<()> {
             info!("✅ All positions closed");
         }
         Action::FarmLighter => {
+            // Check for and retry any failed strategies from previous runs
+            info!("🔍 Checking for failed strategies from previous runs...");
+            trader_client.retry_failed_strategies().await?;
+
             let mut rng = rand::thread_rng();
             let mut i = 0;
 

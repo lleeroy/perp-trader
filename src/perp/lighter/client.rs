@@ -1128,7 +1128,7 @@ impl PerpExchange for LighterClient {
     /// This method implements the complete position opening flow:
     /// 1. Checks for existing positions (atomic operation requirement)
     /// 2. Calculates position size and gets current market price
-    /// 3. Executes market order
+    /// 3. Executes market order, up to 3 attempts
     /// 4. Verifies position was successfully opened
     ///
     /// # Arguments
@@ -1147,57 +1147,110 @@ impl PerpExchange for LighterClient {
     /// Returns `TradingError` if:
     /// * Existing positions are found (atomic operation violation)
     /// * Price retrieval fails
-    /// * Order execution fails
+    /// * Order execution fails after 3 attempts
     /// * Position verification fails
     async fn open_position(&self, token: Token, side: PositionSide, close_at: DateTime<Utc>, amount_usdc: Decimal) -> Result<Position, TradingError> {
+        // First, check if any position is already open
         if let Ok(positions) = self.get_active_positions().await {
             if !positions.is_empty() {
                 return Err(TradingError::AtomicOperationFailed("Position already open".to_string()));
             }
         }
 
-        let price = self.get_market_price(&token, side).await?;
-        let base_amount = self.calculate_base_amount(amount_usdc, price).await?;
-        let order_hash = self.execute_market_order(&token, side, base_amount, price, false).await?;
-        info!("#{} | Order sent: {}", self.wallet.id, order_hash);        
-        let tx = self.get_order_by_hash(&order_hash).await?;
-
-        let positions = self.get_active_positions().await?;
         let market_index = token.get_market_index(Exchange::Lighter);
-        if let Some(pos) = positions.iter().find(|p| p.market_id == market_index) {
-            let id = uuid::Uuid::new_v4().to_string();
+        let mut last_error: Option<TradingError> = None;
 
-            if pos.position_value > Decimal::ZERO {
-                info!("#{} | 🟢🟢 position opened: {}", self.wallet.id, tx.hash);
+        for attempt in 1..=3 {
+            // 1. Get market price and base amount
+            let price = match self.get_market_price(&token, side).await {
+                Ok(p) => p,
+                Err(e) => {
+                    last_error = Some(e);
+                    continue;
+                }
+            };
 
-                return Ok(Position {
-                    wallet_id: self.wallet.id,
-                    id,
-                    strategy_id: None,
-                    exchange: Exchange::Lighter,
-                    symbol: token.get_symbol_string(Exchange::Lighter),
-                    side,
-                    size: pos.position_value,
-                    status: PositionStatus::Open,
-                    opened_at: Utc::now(),
-                    close_at,
-                    closed_at: None,
-                    realized_pnl: None,
-                    updated_at: Utc::now(),
-                });
-            } else {
-                return Err(TradingError::ExchangeError(format!(
-                    "Open position on market index {} has zero size",
-                    market_index
-                )));
+            let base_amount = match self.calculate_base_amount(amount_usdc, price).await {
+                Ok(a) => a,
+                Err(e) => {
+                    last_error = Some(e);
+                    continue;
+                }
+            };
+
+            // 2. Attempt to execute the market order
+            let order_hash = match self.execute_market_order(&token, side, base_amount, price, false).await {
+                Ok(hash) => {
+                    info!("#{} | Attempt {}/3: Order sent: {}", self.wallet.id, attempt, hash);
+                    hash
+                },
+                Err(e) => {
+                    last_error = Some(e);
+                    continue;
+                }
+            };
+
+            // 3. Try to query for order status
+            let tx = match self.get_order_by_hash(&order_hash).await {
+                Ok(t) => t,
+                Err(e) => {
+                    last_error = Some(e);
+                    continue;
+                }
+            };
+
+            // 4. Refresh positions and check if the new position is present
+            match self.get_active_positions().await {
+                Ok(positions) => {
+                    if let Some(pos) = positions.iter().find(|p| p.market_id == market_index) {
+                        let id = uuid::Uuid::new_v4().to_string();
+
+                        if pos.position_value > Decimal::ZERO {
+                            info!("#{} | 🟢🟢 position opened: {}", self.wallet.id, tx.hash);
+
+                            return Ok(Position {
+                                wallet_id: self.wallet.id,
+                                id,
+                                strategy_id: None,
+                                exchange: Exchange::Lighter,
+                                symbol: token.get_symbol_string(Exchange::Lighter),
+                                side,
+                                size: pos.position_value,
+                                status: PositionStatus::Open,
+                                opened_at: Utc::now(),
+                                close_at,
+                                closed_at: None,
+                                realized_pnl: None,
+                                updated_at: Utc::now(),
+                            });
+                        } else {
+                            last_error = Some(TradingError::ExchangeError(format!(
+                                "Open position on market index {} has zero size (attempt {})",
+                                market_index, attempt
+                            )));
+                            continue;
+                        }
+                    } else {
+                        last_error = Some(TradingError::ExchangeError(format!(
+                            "It was not successful to open position on market index {} with token {} (attempt {})",
+                            market_index,
+                            token.get_symbol_string(Exchange::Lighter),
+                            attempt
+                        )));
+                        continue;
+                    }
+                }
+                Err(e) => {
+                    last_error = Some(e);
+                    continue;
+                }
             }
-        } else {
-            return Err(TradingError::ExchangeError(format!(
-                "It was not successful to open position on market index {} with token {}",
-                market_index, 
-                token.get_symbol_string(Exchange::Lighter)
-            )));
         }
+
+        // All attempts failed. Return the last error encountered.
+        Err(last_error.unwrap_or_else(|| TradingError::ExchangeError(
+            "Failed to open position after 3 attempts".to_string()
+        )))
     }
 
 

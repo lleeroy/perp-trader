@@ -169,7 +169,7 @@ impl TraderClient {
         let mut active_strategies: Vec<StrategyMetadata> = strategies.clone();
         
         const CHECK_INTERVAL_SECS: u64 = 15;
-        const LIQUIDATION_THRESHOLD: Decimal = dec!(15.0);
+        const LIQUIDATION_THRESHOLD: Decimal = dec!(13.0);
 
         // Main monitoring loop - continues until all strategies are closed
         while !active_strategies.is_empty() {            
@@ -218,7 +218,7 @@ impl TraderClient {
                             LIQUIDATION_THRESHOLD
                         );
                         strategies_to_close.push((strategy, true)); // true = emergency close
-                    } else if min_percentage < Decimal::from(20) {
+                    } else if min_percentage < Decimal::from(16) {
                         warn!(
                             "⚠️ Strategy {} has positions within {:.2}% of liquidation",
                             strategy.id, min_percentage
@@ -1042,5 +1042,59 @@ impl TraderClient {
     #[allow(unused)]
     pub async fn get_all_strategies(&self) -> Result<Vec<StrategyMetadata>, TradingError> {
         self.strategy_storage.get_all_strategies().await
+    }
+
+    /// Get all failed strategies
+    #[allow(unused)]
+    pub async fn get_failed_strategies(&self) -> Result<Vec<StrategyMetadata>, TradingError> {
+        self.strategy_storage.get_failed_strategies().await
+    }
+
+    /// Check for and retry closing failed strategies
+    /// 
+    /// This method is called at startup to handle any strategies that failed to close
+    /// in previous runs. It will:
+    /// 1. Find all failed strategies in the database
+    /// 2. Attempt to close positions for each failed strategy
+    /// 3. Update status to Closed (success) or keep as Failed (if still failing)
+    /// 4. Log results for monitoring
+    /// 
+    /// # Returns
+    /// * `Ok(())` - All failed strategies were processed (successfully or remain failed)
+    /// * `Err(TradingError)` - If critical errors occur during processing
+    pub async fn retry_failed_strategies(&self) -> Result<(), TradingError> {
+        let failed_strategies = self.get_failed_strategies().await?;
+
+        if failed_strategies.is_empty() {
+            info!("✅ No failed strategies found in database");
+            return Ok(());
+        }
+
+        info!("🔄 Found {} failed strategy(ies) in database", failed_strategies.len());
+        info!("🔄 Attempting to close positions for failed strategies...");
+
+        for strategy in failed_strategies {
+            info!("🔄 Retrying strategy {} | Token: {} | Wallets: {:?}", 
+                strategy.id, strategy.token_symbol, strategy.wallet_ids);
+
+            match self.close_positions_on_lighter_for_wallets_group(&strategy.wallet_ids).await {
+                Ok(_) => {
+                    info!("✅ Successfully closed positions for failed strategy {}", strategy.id);
+                    self.set_strategy_status(&strategy.id, StrategyStatus::Closed, Some(Utc::now()), None).await?;
+                }
+                Err(e) => {
+                    error!("❌ Still unable to close positions for strategy {}: {}", strategy.id, e);
+                    error!("   Strategy {} remains in FAILED status", strategy.id);
+                    
+                    let alerter = TelegramAlerter::new();
+                    if let Err(alert_err) = alerter.send_strategy_error_alert(&strategy, &e).await {
+                        error!("❌ Failed to send alert for strategy {}: {}", strategy.id, alert_err);
+                    }
+                }
+            }
+        }
+
+        info!("🎊 Finished processing failed strategies");
+        Ok(())
     }
 }

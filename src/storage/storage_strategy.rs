@@ -311,6 +311,44 @@ impl StrategyStorage {
 
         Ok(strategies)
     }
+
+    /// Get all failed strategies (status = Failed)
+    pub async fn get_failed_strategies(&self) -> Result<Vec<StrategyMetadata>, TradingError> {
+        let rows = sqlx::query(
+            r#"
+            SELECT id, token_symbol, wallet_ids, longs_size, shorts_size, status, opened_at, updated_at, 
+                   close_at, closed_at, realized_pnl, long_position_ids, short_position_ids
+            FROM strategies WHERE status = 'FAILED' ORDER BY updated_at DESC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        let strategies = rows
+            .iter()
+            .map(|row| {
+                Ok(StrategyMetadata {
+                    id: row.try_get("id")?,
+                    token_symbol: row.try_get("token_symbol")?,
+                    wallet_ids: parse_wallet_ids(row.try_get("wallet_ids")?),
+                    longs_size: Decimal::from_str(row.try_get("longs_size")?).unwrap(),
+                    shorts_size: Decimal::from_str(row.try_get("shorts_size")?).unwrap(),
+                    status: StrategyStatus::from_str(row.try_get("status")?).unwrap(),
+                    opened_at: row.try_get("opened_at")?,
+                    updated_at: row.try_get("updated_at")?,
+                    close_at: row.try_get("close_at")?,
+                    closed_at: row.try_get("closed_at")?,
+                    realized_pnl: row
+                        .try_get::<Option<String>, _>("realized_pnl")?
+                        .and_then(|s| Decimal::from_str(&s).ok()),
+                    long_position_ids: parse_position_ids(row.try_get("long_position_ids")?),
+                    short_position_ids: parse_position_ids(row.try_get("short_position_ids")?),
+                })
+            })
+            .collect::<Result<Vec<_>, TradingError>>()?;
+
+        Ok(strategies)
+    }
 }
 
 /// Lightweight strategy metadata without full position details
