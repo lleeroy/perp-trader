@@ -1,61 +1,94 @@
 # Perp Trader
 
-Automated perpetual futures trading bot implementing market-neutral strategies for point farming on decentralized exchanges.
+Automated trading bot for perpetual futures on decentralized exchanges. Runs market-neutral strategies (balanced long/short positions) across multiple wallets to farm points while minimizing directional risk.
+
+## What it does
+
+- Opens balanced long/short positions across 40+ wallets simultaneously
+- Monitors positions for liquidation risk (closes if within 13% of liquidation price)
+- Auto-closes positions after configurable time period (4-8 hours)
+- Sends Telegram alerts on failures
+- Persists all positions/strategies to PostgreSQL for recovery
 
 ## Tech Stack
 
-- **Language:** Rust (async/await, tokio runtime)
-- **Databases:** PostgreSQL (SQLx), MongoDB
-- **APIs:** REST, WebSocket, EIP-191 signatures
-- **Crypto:** AES-256-GCM encryption, Argon2id key derivation, Ethereum/Solana signing
-- **Infrastructure:** Docker, Fly.io, Telegram alerts
+- **Rust** with Tokio async runtime
+- **PostgreSQL** (SQLx) for positions & strategies
+- **MongoDB** for wallet accounts
+- **AES-256-GCM + Argon2id** for encrypting private keys at rest
 
 ## Architecture
 
 ```
 src/
-├── trader/         # Trading orchestration & multi-wallet management
-│   ├── client.rs   # Strategy execution, position monitoring
-│   ├── strategy.rs # Market-neutral allocation algorithms
-│   └── wallet.rs   # Encrypted credential management
-├── perp/           # Exchange integrations (trait-based)
-│   ├── lighter/    # Lighter DEX client with auto API key registration
-│   └── ranger/     # Ranger exchange client
-├── storage/        # Persistence layer
-│   ├── database.rs # MongoDB singleton with connection pooling
-│   └── storage_*.rs# PostgreSQL repositories
-├── model/          # Domain models (Position, Strategy, Token)
-└── alert/          # Telegram notifications
+├── trader/           # Trading logic
+│   ├── client.rs     # Main orchestrator, manages wallet groups
+│   ├── strategy.rs   # Allocation algorithm (balances long/short)
+│   └── wallet.rs     # Loads encrypted credentials
+├── perp/             # Exchange clients
+│   ├── traits.rs     # PerpExchange trait
+│   ├── lighter/      # Lighter DEX implementation
+│   └── ranger/       # Ranger exchange
+├── storage/          # Database layer
+└── alert/            # Telegram notifications
 ```
 
-## Key Features
+## How it works
 
-- **Multi-wallet orchestration** - Parallel position management across 40+ wallets
-- **Market-neutral strategies** - Balanced long/short allocations with configurable leverage
-- **Liquidation monitoring** - Real-time position health checks with 13% threshold
-- **Auto-recovery** - Failed strategy retry mechanism with exponential backoff
-- **Secure key storage** - AES-256-GCM encrypted private keys with Argon2id derivation
+1. **Wallet grouping** — Splits wallets into groups of 3-5
+2. **Allocation** — Randomly assigns wallets to long/short sides, calculates position sizes to ensure `|total_long - total_short| < $2`
+3. **Execution** — Opens all positions in parallel via `futures::try_join_all`
+4. **Monitoring** — Background task checks liquidation distance every 15s
+5. **Closure** — Closes positions when scheduled time reached or liquidation risk detected
 
-## Configuration
+## Key implementation details
+
+**Exchange abstraction:**
+```rust
+#[async_trait]
+pub trait PerpExchange: Send + Sync {
+    async fn open_position(&self, token: Token, side: PositionSide,
+                           close_at: DateTime<Utc>, amount_usdc: Decimal) -> Result<Position, TradingError>;
+    async fn close_position(&self, position: &Position) -> Result<Position, TradingError>;
+    // ...
+}
+```
+
+**Credential encryption:**
+```rust
+// Keys encrypted with AES-256-GCM, derived via Argon2id
+// Format: [version:1B][salt:16B][nonce:12B][ciphertext]
+pub fn encrypt_private_key(private_key_hex: &str, password: &str) -> Result<String>
+```
+
+## Setup
 
 ```bash
 cp .env.example .env
 cp config.example.toml config.toml
-# Edit files with your credentials
+# Fill in your credentials
+
+cargo run
 ```
 
-## Build & Run
+## Config
 
+```toml
+[trading]
+min_leverage = 2.0
+max_leverage = 3.0
+min_duration_hours = 4
+max_duration_hours = 8
+
+[monitoring]
+check_interval_seconds = 60
+```
+
+## Deployment
+
+Runs on Fly.io:
 ```bash
-# Development
-cargo run
-
-# Production
-cargo build --release
-./target/release/perp-trader
-
-# Docker
-docker build -t perp-trader .
+fly deploy
 ```
 
 ## License
