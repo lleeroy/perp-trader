@@ -46,16 +46,11 @@ impl Database {
     /// * `Result<Self>` - New TradingDatabase instance if successful, error if connection fails
     async fn new_internal() -> Result<Self> {
         dotenv::dotenv().ok();
-        let database_password = std::env::var("DATABASE_PASSWORD")
-            .context("Failed to get DATABASE_PASSWORD from environment variables")?;
-        
-        let client_url = format!(
-            "mongodb+srv://***REMOVED***:{}@***REMOVED***/",
-            database_password
-        );
+        let mongodb_url = std::env::var("MONGODB_URL")
+            .context("Failed to get MONGODB_URL from environment variables")?;
 
         // Configure connection pooling
-        let mut client_options = ClientOptions::parse(client_url).await?;
+        let mut client_options = ClientOptions::parse(mongodb_url).await?;
         
         // Set connection pool options for better performance
         client_options.max_pool_size = Some(50); // Maximum number of connections in the pool

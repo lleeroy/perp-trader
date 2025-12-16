@@ -878,8 +878,10 @@ impl LighterClient {
         let is_ask = matches!(side, PositionSide::Short);
         let reduce_only = matches!(close_position, true);
         let mut last_nonce_error: Option<String> = None;
+        const MAX_ORDER_ATTEMPTS: u8 = 5;
+        const FORBIDDEN_BACKOFF_MS: u64 = 350;
 
-        for attempt in 0..2 {
+        for attempt in 0..MAX_ORDER_ATTEMPTS {
             let nonce = self.get_nonce().await?;
 
             info!(
@@ -921,14 +923,25 @@ impl LighterClient {
                 false
             );
 
-            let order_hash_result = self.send_tx(body).await;
-
-            match order_hash_result {
+            match self.send_tx(body).await {
                 Ok(order_hash) => return Ok(order_hash),
                 Err(e) => match e {
                     TradingError::InvalidNonce(e) => {
                         last_nonce_error = Some(e.clone());
                         warn!("#{} | Invalid nonce. Retrying...", self.wallet.id);
+
+                        continue;
+                    }
+                    TradingError::OrderExecutionFailed(message) if message.contains("403") => {
+                        warn!(
+                            "#{} | sendTx returned 403 Forbidden (attempt {}/{}) - retrying...",
+                            self.wallet.id,
+                            attempt + 1,
+                            MAX_ORDER_ATTEMPTS
+                        );
+
+                        let backoff = FORBIDDEN_BACKOFF_MS * (attempt as u64 + 1);
+                        sleep(Duration::from_millis(backoff)).await;
 
                         continue;
                     }

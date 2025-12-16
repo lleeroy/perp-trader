@@ -337,15 +337,16 @@ async fn main() -> Result<()> {
             trader_client.close_all_positions_on_lighter_for_all_wallets().await?;
             info!("✅ All positions closed");
         }
-        Action::FarmLighter => {
-            // Check for and retry any failed strategies from previous runs
-            info!("🔍 Checking for failed strategies from previous runs...");
-            trader_client.retry_failed_strategies().await?;
-
+        Action::FarmLighter => {            
             let mut rng = rand::thread_rng();
             let mut i = 0;
 
+            
             loop {
+                // Check for and retry any failed strategies from previous runs
+                info!("🔍 Checking for failed strategies from previous runs...");
+                trader_client.retry_failed_strategies().await?;
+                
                 let loop_sleep_minutes = rng.gen_range(30..=80);
                 info!("#{} | Strategy starting...", i);
 
@@ -374,24 +375,52 @@ async fn main() -> Result<()> {
         Action::ShowAllWalletsPoints => {
             use futures::future;
 
-            // Run all async blocks in parallel and handle their results correctly
-            let wallet_points = future::try_join_all(
+            // Run all async blocks in parallel and collect results (both successes and failures)
+            let results = future::join_all(
                 trader_client.wallets.iter().map(|wallet| {
+                    let wallet_id = wallet.id;
                     async move {
-                        let lighter_client = LighterClient::new(&wallet).await?;
-                        lighter_client.get_account_points().await
+                        (wallet_id, async {
+                            let lighter_client = LighterClient::new(&wallet).await?;
+                            lighter_client.get_account_points().await
+                        }.await)
                     }
                 })
-            ).await?;
+            ).await;
 
-            for i in 0..wallet_points.len() {
-                info!("#{:>3}: total: {:.2} points | last week: {:.2}", 
-                i + 1, wallet_points[i].user_total_points, wallet_points[i].user_last_week_points);
+            let mut successful_points = Vec::new();
+            let mut failed_count = 0;
+
+            // Process each result separately
+            for (wallet_id, result) in results {
+                match result {
+                    Ok(points) => {
+                        successful_points.push((wallet_id, points));
+                    }
+                    Err(e) => {
+                        error!("Wallet #{}: Failed to fetch points - {}", wallet_id, e);
+                        failed_count += 1;
+                    }
+                }
             }
 
-            let last_week_points = wallet_points.iter().map(|points| points.user_last_week_points).sum::<f64>();
-            let total_points = wallet_points.iter().map(|points| points.user_total_points).sum::<f64>();
-            info!("total points: {:.2} | last week: {:.2}", total_points, last_week_points);
+            // Display successful results
+            for (wallet_id, points) in &successful_points {
+                info!("#{:>3}: total: {:.2} points | last week: {:.2}", 
+                    wallet_id, points.user_total_points, points.user_last_week_points);
+            }
+
+            // Show summary
+            if !successful_points.is_empty() {
+                let last_week_points = successful_points.iter().map(|(_, points)| points.user_last_week_points).sum::<f64>();
+                let total_points = successful_points.iter().map(|(_, points)| points.user_total_points).sum::<f64>();
+                info!("Total points: {:.2} | Last week: {:.2} (from {} successful wallets)", 
+                    total_points, last_week_points, successful_points.len());
+            }
+
+            if failed_count > 0 {
+                warn!("Failed to fetch points from {} wallet(s)", failed_count);
+            }
         }
         Action::ClearAllLighterApiKeys => {
             unreachable!();

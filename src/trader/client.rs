@@ -639,7 +639,7 @@ impl TraderClient {
     /// # Returns
     /// * `Ok(())` - All positions closed successfully for the group
     /// * `Err(TradingError)` - If any close operation fails after all attempts
-    async fn close_positions_on_lighter_for_wallets_group(&self, wallet_ids: &[u8]) -> Result<(), TradingError> {
+    pub async fn close_positions_on_lighter_for_wallets_group(&self, wallet_ids: &[u8]) -> Result<(), TradingError> {
         use futures::future::try_join_all;
 
         for attempt in 1..=MAX_ATTEMPTS {
