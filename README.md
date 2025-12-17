@@ -1,10 +1,10 @@
 # Perp Trader
 
-Automated trading bot for perpetual futures on decentralized exchanges. Runs market-neutral strategies (balanced long/short positions) across multiple wallets to farm points while minimizing directional risk.
+Automated trading bot for perpetual futures on decentralized exchanges. Executes market-neutral strategies (balanced long/short positions) to minimize directional exposure while capturing funding rates.
 
 ## What it does
 
-- Opens balanced long/short positions across 40+ wallets simultaneously
+- Opens balanced long/short positions with configurable wallet management
 - Monitors positions for liquidation risk (closes if within 13% of liquidation price)
 - Auto-closes positions after configurable time period (4-8 hours)
 - Sends Telegram alerts on failures
@@ -22,7 +22,7 @@ Automated trading bot for perpetual futures on decentralized exchanges. Runs mar
 ```
 src/
 ├── trader/           # Trading logic
-│   ├── client.rs     # Main orchestrator, manages wallet groups
+│   ├── client.rs     # Main orchestrator, manages position lifecycle
 │   ├── strategy.rs   # Allocation algorithm (balances long/short)
 │   └── wallet.rs     # Loads encrypted credentials
 ├── perp/             # Exchange clients
@@ -35,8 +35,8 @@ src/
 
 ## How it works
 
-1. **Wallet grouping** — Splits wallets into groups of 3-5
-2. **Allocation** — Randomly assigns wallets to long/short sides, calculates position sizes to ensure `|total_long - total_short| < $2`
+1. **Position sizing** — Calculates optimal position sizes based on available balance
+2. **Allocation** — Assigns positions to long/short sides, ensuring `|total_long - total_short| < $2` for market neutrality
 3. **Execution** — Opens all positions in parallel via `futures::try_join_all`
 4. **Monitoring** — Background task checks liquidation distance every 15s
 5. **Closure** — Closes positions when scheduled time reached or liquidation risk detected
